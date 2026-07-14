@@ -1,0 +1,1487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Lamplight Reader — listen to your books</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&display=swap');
+
+  :root{
+    color-scheme: light;
+    --paper: #ECE6D6;
+    --paper-rgb: 236,230,214;
+    --paper-2: #E2DAC5;
+    --card: #FFFFFF;
+    --ink: #2B2620;
+    --ink-soft: #6B6355;
+    --lamp: #3F5D48;
+    --lamp-dark: #2B4234;
+    --brass: #AD8A52;
+    --panel: #21281F;
+    --panel-rgb: 33,40,31;
+    --panel-2: #182018;
+    --glow: rgba(173, 138, 82, 0.28);
+    --sys-font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', Roboto, sans-serif;
+  }
+  *{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html,body{ height:100%; }
+  body{
+    margin:0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sys-font);
+    display:flex;
+    flex-direction:column;
+  }
+  button, select, input, textarea{ font-family: var(--sys-font); }
+  ::selection{ background: var(--glow); }
+
+  /* ---------- Top bar (translucent, iOS nav-bar style) ---------- */
+  header{
+    position: sticky; top:0; z-index: 30;
+    padding: calc(env(safe-area-inset-top, 0px) + 14px) 20px 13px;
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    background: rgba(var(--paper-rgb), 0.78);
+    border-bottom: 1px solid rgba(0,0,0,0.07);
+  }
+  body.dark header{ border-bottom-color: rgba(255,255,255,0.08); }
+  header h1{
+    font-family:'Source Serif 4', serif;
+    font-weight:700;
+    font-size: 21px;
+    margin:0;
+    letter-spacing: 0.1px;
+    display:flex; align-items:center; gap:8px;
+  }
+  header h1 .dot{
+    width:8px; height:8px; border-radius:50%;
+    background: var(--lamp);
+    flex-shrink:0;
+  }
+  header .tag{
+    font-size: 12.5px;
+    color: var(--ink-soft);
+    display:block;
+    margin: 2px 0 0 16px;
+  }
+
+  /* ---------- Layout ---------- */
+  .layout{
+    flex:1;
+    display:grid;
+    grid-template-columns: 270px 1fr;
+    min-height:0;
+  }
+  @media (max-width: 800px){
+    .layout{ grid-template-columns: 1fr; }
+    .sidebar{ display:none; }
+  }
+
+  .sidebar{
+    padding: 18px;
+    overflow-y:auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .sidebar h2{
+    font-size: 12px;
+    font-weight:600;
+    color: var(--ink-soft);
+    margin: 4px 4px 10px;
+  }
+
+  /* ---------- Grouped list (Contents rows, Settings rows) ---------- */
+  .settings-group{
+    background: var(--card);
+    border-radius: 14px;
+    overflow: hidden;
+    margin-bottom: 22px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+  }
+  .toc-row{
+    display:flex; align-items:center; justify-content:space-between;
+    gap: 10px;
+    padding: 13px 16px;
+    font-size: 15px;
+    line-height:1.35;
+    cursor:pointer;
+    border-bottom: 1px solid rgba(0,0,0,0.06);
+    color: var(--ink);
+  }
+  body.dark .toc-row{ border-bottom-color: rgba(255,255,255,0.08); }
+  .toc-row:last-child{ border-bottom:none; }
+  .toc-row:active{ background: rgba(0,0,0,0.04); }
+  body.dark .toc-row:active{ background: rgba(255,255,255,0.06); }
+  .toc-row.active{ color: var(--lamp-dark); font-weight:600; }
+  body.dark .toc-row.active{ color: var(--lamp); }
+  .toc-row .check{ color: var(--lamp-dark); flex-shrink:0; }
+  body.dark .toc-row .check{ color: var(--lamp); }
+
+  /* ---------- Main / reading pane ---------- */
+  main{
+    padding: 22px 20px 20px;
+    overflow-y:auto;
+    -webkit-overflow-scrolling: touch;
+    display:flex;
+    justify-content:center;
+  }
+  .page{
+    max-width: 700px;
+    width:100%;
+  }
+
+  /* Upload / empty state */
+  .drop{
+    border: none;
+    border-radius: 20px;
+    padding: 52px 28px;
+    text-align:center;
+    background: var(--card);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }
+  .drop-icon{ color: var(--lamp); margin-bottom: 16px; }
+  .drop h3{
+    font-family:'Source Serif 4', serif;
+    font-size: 20px;
+    margin: 0 0 8px;
+  }
+  .drop p{ color: var(--ink-soft); font-size:14px; margin: 0 0 22px; line-height:1.5; }
+  .drop input[type=file]{ display:none; }
+
+  .btn{
+    font-weight:600;
+    font-size: 14px;
+    border:none;
+    border-radius: 999px;
+    padding: 12px 22px;
+    cursor:pointer;
+    background: var(--lamp);
+    color: #F3EEDD;
+    transition: opacity .15s ease;
+    display:inline-block;
+  }
+  .btn:active{ opacity: 0.75; }
+  .status{ font-size:13px; color:var(--ink-soft); margin-top:14px; min-height:18px;}
+
+  /* Toolbar chips */
+  .toolbar-row{ display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
+  .chip{
+    display:inline-flex; align-items:center; gap:5px;
+    font-weight:600; font-size: 13.5px;
+    background: var(--card); color: var(--lamp-dark);
+    border:none; border-radius: 999px;
+    padding: 9px 15px 9px 12px;
+    cursor:pointer;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  }
+  body.dark .chip{ color: #DCE8DF; }
+  .chip:active{ background: var(--paper-2); }
+
+  /* Book title block */
+  .book-title{
+    font-family:'Source Serif 4', serif;
+    font-size: 24px;
+    font-weight:700;
+    margin: 0 0 4px;
+  }
+  .book-sub{
+    font-size: 13px;
+    color: var(--ink-soft);
+    margin: 0 0 24px;
+  }
+
+  /* Reading text */
+  .prose{
+    font-family:'Source Serif 4', serif;
+    font-size: var(--prose-font-size, 19px);
+    line-height: 1.85;
+    padding-bottom: 170px;
+  }
+  .prose .s{
+    cursor:pointer;
+    border-radius: 4px;
+    padding: 1px 0;
+    -webkit-touch-callout: none;
+  }
+  .prose .s:active{ background: rgba(173,138,82,0.15); }
+  .prose .s.current{
+    background: var(--glow);
+    box-shadow: 0 0 0 2px var(--glow);
+  }
+
+  /* Reading window: prev / current / next paragraph */
+  .para-block{ margin-bottom: 30px; transition: opacity .2s ease; }
+  .para-block.prev, .para-block.next{ opacity: 0.4; }
+  .para-block.current{ opacity: 1; }
+  .para-block.para-empty{
+    font-size: 12px;
+    font-weight:600;
+    letter-spacing: 0.4px;
+    color: var(--ink-soft);
+    opacity: 0.55;
+  }
+
+  .hidden{ display:none !important; }
+
+  /* ---------- Player bar (frosted, floating mini-player) ---------- */
+  .player{
+    position: sticky;
+    bottom:0;
+    background: rgba(var(--panel-rgb), 0.86);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    color: #E9E4D4;
+    padding: 10px 22px calc(12px + env(safe-area-inset-bottom, 0px));
+    display:none;
+    flex-direction: column;
+    gap: 8px;
+    border-radius: 20px 20px 0 0;
+  }
+  .player.visible{ display:flex; }
+  .player-status{
+    font-size: 12px;
+    color: #C9BFA8;
+    text-align:center;
+    min-height: 14px;
+  }
+  .player-status:empty{ min-height:0; }
+  .player-scrub{ display:flex; align-items:center; gap:10px; }
+  .lamp-progress{
+    flex:1;
+    height: 5px;
+    background: rgba(255,255,255,0.14);
+    border-radius: 4px;
+    overflow:hidden;
+    cursor:pointer;
+  }
+  .lamp-progress-fill{
+    height:100%;
+    background: linear-gradient(90deg, var(--brass), #E4C27E);
+    width:0%;
+  }
+  .player .time{ font-size:12px; color:#B9B199; white-space:nowrap; }
+
+  .player-controls{
+    display:flex; align-items:center; justify-content:center; gap: 30px;
+  }
+  .ctrl-btn{
+    background:none; border:none; color:#E9E4D4;
+    cursor:pointer; padding: 6px; line-height:1;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .ctrl-btn:active{ opacity: 0.6; }
+  .play{
+    background: var(--brass);
+    color: var(--panel-2);
+    width:52px; height:52px;
+    border:none; border-radius:50%;
+    cursor:pointer;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .play:active{ opacity: 0.85; }
+  .play svg{ margin-left: 2px; } /* optical centering for the play triangle */
+  .play.is-playing svg{ margin-left:0; }
+
+  /* ---------- Bottom sheets (Contents / Settings) ---------- */
+  .modal-backdrop{
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.4);
+    display:flex; align-items:flex-end; justify-content:center;
+    z-index: 50;
+  }
+  .modal-panel{
+    background: var(--paper-2);
+    border-radius: 20px 20px 0 0;
+    max-width: 560px;
+    width:100%;
+    max-height: 82vh;
+    overflow-y:auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 10px 18px calc(24px + env(safe-area-inset-bottom, 0px));
+    box-shadow: 0 -8px 40px rgba(0,0,0,0.25);
+  }
+  .sheet-handle{
+    width: 36px; height: 5px; border-radius: 3px;
+    background: rgba(0,0,0,0.18);
+    margin: 6px auto 14px;
+  }
+  body.dark .sheet-handle{ background: rgba(255,255,255,0.22); }
+  .modal-header{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    margin: 4px 4px 14px;
+  }
+  .modal-header h2{
+    font-family:'Source Serif 4', serif;
+    font-size: 19px;
+    margin:0;
+  }
+  .modal-close{
+    background: rgba(0,0,0,0.08); border:none; cursor:pointer;
+    color: var(--ink-soft);
+    width: 28px; height:28px; border-radius:50%;
+    display:flex; align-items:center; justify-content:center;
+  }
+  body.dark .modal-close{ background: rgba(255,255,255,0.12); }
+
+  /* ---------- Settings rows ---------- */
+  .settings-row{
+    display:flex; align-items:center; justify-content:space-between;
+    gap: 14px;
+    padding: 13px 16px;
+    border-bottom: 1px solid rgba(0,0,0,0.06);
+  }
+  body.dark .settings-row{ border-bottom-color: rgba(255,255,255,0.08); }
+  .settings-group .toc-row:last-child, .settings-group .settings-row:last-child{ border-bottom:none; }
+  .settings-row-stacked{ flex-direction:column; align-items:stretch; }
+  .settings-row-label{ font-size: 15px; font-weight:500; flex-shrink:0; }
+
+  .native-select{
+    font-size: 14px;
+    color: var(--ink);
+    background: transparent;
+    border: none;
+    text-align:right;
+    max-width: 55%;
+  }
+  .native-select option{
+    background: var(--card);
+    color: var(--ink);
+  }
+  .speed-control{ display:flex; align-items:center; gap:10px; width: 55%; }
+  .speed-control input[type=range]{ flex:1; accent-color: var(--lamp); }
+  .speed-control .rate-label, .speed-control .fontsize-readout{
+    font-size: 13.5px; color: var(--ink-soft); width: 40px; text-align:right; flex-shrink:0;
+  }
+
+  .settings-row-stacked textarea{
+    width:100%; margin-top:10px;
+    font-size: 14px;
+    border: 1px solid rgba(0,0,0,0.1); border-radius: 10px;
+    padding: 10px 11px; resize: vertical; min-height: 56px;
+    background: rgba(0,0,0,0.03);
+    color: var(--ink);
+  }
+  body.dark .settings-row-stacked textarea{
+    background: rgba(255,255,255,0.06);
+    border-color: rgba(255,255,255,0.14);
+  }
+  .footnote{ font-size: 12.5px; color: var(--ink-soft); padding: 0 6px 6px; line-height:1.5; }
+
+  /* ---------- iOS-style switch ---------- */
+  .ios-switch{ position:relative; display:inline-block; width:46px; height:28px; flex-shrink:0; }
+  .ios-switch input{ position:absolute; opacity:0; width:100%; height:100%; margin:0; cursor:pointer; z-index:1; }
+  .ios-switch .track{
+    position:absolute; inset:0; background: rgba(0,0,0,0.16);
+    border-radius:999px; transition: background .2s ease;
+  }
+  body.dark .ios-switch .track{ background: rgba(255,255,255,0.18); }
+  .ios-switch .thumb{
+    position:absolute; top:2px; left:2px; width:24px; height:24px; border-radius:50%;
+    background:#fff; box-shadow:0 2px 5px rgba(0,0,0,0.3); transition: transform .2s ease;
+  }
+  .ios-switch input:checked + .track{ background: var(--lamp); }
+  .ios-switch input:checked ~ .thumb{ transform: translateX(18px); }
+
+  /* ---------- Dark mode ---------- */
+  body.dark{
+    color-scheme: dark;
+    --paper: #1B1F1A;
+    --paper-rgb: 27,31,26;
+    --paper-2: #262B23;
+    --card: #232821;
+    --ink: #E9E4D4;
+    --ink-soft: #A8A192;
+    --lamp: #6FA37E;
+    --lamp-dark: #8FC29E;
+    --brass: #D9B577;
+    --panel: #14180F;
+    --panel-rgb: 20,24,15;
+    --panel-2: #0F130C;
+    --glow: rgba(217, 181, 119, 0.22);
+  }
+  body.dark .drop, body.dark .chip, body.dark .settings-group{
+    box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span class="dot"></span>Lamplight Reader</h1>
+  <span class="tag" id="headerTag">Your books, read aloud — entirely on this device</span>
+  <div class="toolbar-row hidden" id="headerActions">
+    <button class="chip" id="newBookBtn">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="15,5 8,12 15,19"/></svg>
+      Library
+    </button>
+    <button class="chip" id="tocBtn">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="20" y2="12"/><line x1="8" y1="18" x2="20" y2="18"/><circle cx="4" cy="6" r="1.3" fill="currentColor" stroke="none"/><circle cx="4" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="4" cy="18" r="1.3" fill="currentColor" stroke="none"/></svg>
+      Contents
+    </button>
+    <button class="chip" id="settingsBtn">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="7" x2="20" y2="7"/><circle cx="9" cy="7" r="2" fill="currentColor" stroke="none"/><line x1="4" y1="12" x2="20" y2="12"/><circle cx="15" cy="12" r="2" fill="currentColor" stroke="none"/><line x1="4" y1="17" x2="20" y2="17"/><circle cx="7" cy="17" r="2" fill="currentColor" stroke="none"/></svg>
+      Settings
+    </button>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="sidebar" id="sidebar">
+    <h2>Chapters</h2>
+    <div class="settings-group" id="chapterList"></div>
+  </aside>
+
+  <main>
+    <div class="page">
+
+      <div id="uploadView">
+        <div class="drop" id="dropZone">
+          <svg class="drop-icon" width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 19.5V6a2 2 0 0 1 2-2h8.5L20 8.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2.5Z"/>
+            <path d="M14 4v4.5H18.5"/>
+            <path d="M9 13.5l3-3 3 3M12 10.5V17"/>
+          </svg>
+          <h3>Bring a book to the lamp</h3>
+          <p>Drop an EPUB or PDF here, or choose a file. Nothing is uploaded anywhere — parsing and reading both happen in this browser tab.</p>
+          <label class="btn" for="fileInput">Choose a file</label>
+          <input type="file" id="fileInput" accept=".epub,.pdf">
+          <div class="status" id="loadStatus"></div>
+        </div>
+      </div>
+
+      <div id="readerView" class="hidden">
+        <p class="book-title" id="bookTitle"></p>
+        <p class="book-sub" id="bookSub"></p>
+        <div class="prose" id="proseText"></div>
+      </div>
+
+    </div>
+  </main>
+</div>
+
+<div class="player" id="player">
+  <div class="player-status" id="engineStatus"></div>
+  <div class="player-scrub">
+    <div class="lamp-progress" id="lampProgress"><div class="lamp-progress-fill" id="lampProgressFill"></div></div>
+    <span class="time" id="posLabel">0 / 0</span>
+  </div>
+  <div class="player-controls">
+    <button class="ctrl-btn" id="prevBtn" aria-label="Previous sentence">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="2.2" height="14"/><polygon points="18,5 18,19 9,12"/></svg>
+    </button>
+    <button class="play" id="playBtn" aria-label="Play">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><polygon points="8,5 8,19 19,12"/></svg>
+    </button>
+    <button class="ctrl-btn" id="nextBtn" aria-label="Next sentence">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><rect x="15.8" y="5" width="2.2" height="14"/><polygon points="6,5 6,19 15,12"/></svg>
+    </button>
+  </div>
+</div>
+
+<div class="modal-backdrop hidden" id="tocModal">
+  <div class="modal-panel">
+    <div class="sheet-handle"></div>
+    <div class="modal-header">
+      <h2>Contents</h2>
+      <button class="modal-close" id="tocModalClose" aria-label="Close">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>
+      </button>
+    </div>
+    <div class="settings-group" id="tocModalList"></div>
+  </div>
+</div>
+
+<div class="modal-backdrop hidden" id="settingsModal">
+  <div class="modal-panel">
+    <div class="sheet-handle"></div>
+    <div class="modal-header">
+      <h2>Settings</h2>
+      <button class="modal-close" id="settingsModalClose" aria-label="Close">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>
+      </button>
+    </div>
+
+    <div class="settings-group">
+      <div class="settings-row">
+        <span class="settings-row-label">Voice</span>
+        <select id="voiceSelect" class="native-select"></select>
+      </div>
+      <div class="settings-row">
+        <span class="settings-row-label">Speed</span>
+        <div class="speed-control">
+          <input type="range" id="rateSlider" min="0.6" max="2" step="0.05" value="1">
+          <span class="rate-label" id="rateLabel">1.0×</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <div class="settings-row">
+        <span class="settings-row-label">Text size</span>
+        <div class="speed-control">
+          <input type="range" id="fontSizeSlider" min="14" max="30" step="1" value="19">
+          <span class="fontsize-readout" id="fontSizeReadout">19px</span>
+        </div>
+      </div>
+      <div class="settings-row">
+        <span class="settings-row-label">Dark mode</span>
+        <label class="ios-switch">
+          <input type="checkbox" id="darkModeToggle">
+          <span class="track"></span><span class="thumb"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <div class="settings-row">
+        <span class="settings-row-label">Filter strong language</span>
+        <label class="ios-switch">
+          <input type="checkbox" id="filterToggle">
+          <span class="track"></span><span class="thumb"></span>
+        </label>
+      </div>
+      <div class="settings-row settings-row-stacked">
+        <span class="settings-row-label">Additional words to filter</span>
+        <textarea id="filterWords" placeholder="comma-separated, e.g. wordone, wordtwo"></textarea>
+      </div>
+    </div>
+    <p class="footnote">Filtering muffles matched words in speech and masks them on screen. Applies to every book.</p>
+  </div>
+</div>
+
+<audio id="ttsAudio" playsinline style="display:none"></audio>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
+<script type="module">
+  // Kokoro TTS — 82M-parameter neural voice, runs 100% locally via WASM. Loaded lazily,
+  // only when the person actually presses play (it's a real download).
+  import { KokoroTTS } from "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm";
+
+  let ttsInstance = null;
+  let loadingPromise = null;
+
+  function encodeWav(samples, sampleRate){
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+    const writeStr = (offset, str) => { for(let i=0;i<str.length;i++) view.setUint8(offset+i, str.charCodeAt(i)); };
+    writeStr(0,'RIFF'); view.setUint32(4, 36 + samples.length*2, true); writeStr(8,'WAVE');
+    writeStr(12,'fmt '); view.setUint32(16,16,true); view.setUint16(20,1,true); view.setUint16(22,1,true);
+    view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate*2, true);
+    view.setUint16(32,2,true); view.setUint16(34,16,true);
+    writeStr(36,'data'); view.setUint32(40, samples.length*2, true);
+    let offset = 44;
+    for(let i=0;i<samples.length;i++, offset+=2){
+      const s = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(offset, s < 0 ? s*0x8000 : s*0x7FFF, true);
+    }
+    return new Blob([buffer], {type:'audio/wav'});
+  }
+
+  window.KokoroEngine = {
+    async ensureLoaded(onProgress){
+      if(ttsInstance) return ttsInstance;
+      if(!loadingPromise){
+        const hasWebGPU = typeof navigator !== 'undefined' && !!navigator.gpu;
+        const attempt = (device, dtype) => KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", {
+          dtype, device, progress_callback: onProgress
+        });
+        loadingPromise = (hasWebGPU
+          ? attempt("webgpu", "fp32").catch(err => {
+              console.warn('WebGPU load failed, falling back to WASM:', err);
+              return attempt("wasm", "q8");
+            })
+          : attempt("wasm", "q8")
+        ).then(t => { ttsInstance = t; return t; })
+         .catch(err => { loadingPromise = null; throw err; });
+      }
+      return loadingPromise;
+    },
+    isLoaded(){ return !!ttsInstance; },
+    listVoices(){
+      if(!ttsInstance) return [];
+      try{
+        const v = ttsInstance.list_voices ? ttsInstance.list_voices() : Object.keys(ttsInstance.voices || {});
+        return Array.isArray(v) ? v : Object.keys(v || {});
+      } catch(e){ return []; }
+    },
+    async generateBlob(text, voice, speed){
+      const audio = await ttsInstance.generate(text, { voice, speed });
+      if(typeof audio.toBlob === 'function') return audio.toBlob();
+      const samples = audio.audio || audio.data;
+      const rate = audio.sampling_rate || audio.sample_rate || 24000;
+      return encodeWav(samples, rate);
+    }
+  };
+</script>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+// ---------------- State ----------------
+let chapters = [];     // [{title, sentences: [string,...]}]
+let curChapter = 0;
+let curSentence = 0;
+let isPlaying = false;
+let bookKey = null;    // for localStorage progress
+let currentAudioEl = null;   // <audio> element used for kokoro playback
+const kokoroCache = new Map(); // "chapter-sentence" -> Promise<Blob>
+let playToken = 0;            // increments whenever playback is stopped, to cancel stale async work
+let filterEnabled = true;
+let customBadWords = [];
+
+const el = id => document.getElementById(id);
+const uploadView = el('uploadView');
+const readerView = el('readerView');
+const chapterList = el('chapterList');
+const proseText = el('proseText');
+const player = el('player');
+const loadStatus = el('loadStatus');
+
+// ---------------- Modals ----------------
+function openModal(modalEl){ modalEl.classList.remove('hidden'); }
+function closeModal(modalEl){ modalEl.classList.add('hidden'); }
+
+document.querySelectorAll('.modal-backdrop').forEach(backdrop => {
+  backdrop.addEventListener('click', e => { if(e.target === backdrop) closeModal(backdrop); });
+});
+document.addEventListener('keydown', e => {
+  if(e.key === 'Escape'){
+    document.querySelectorAll('.modal-backdrop').forEach(m => closeModal(m));
+  }
+});
+
+el('tocBtn').addEventListener('click', () => openModal(el('tocModal')));
+el('tocModalClose').addEventListener('click', () => closeModal(el('tocModal')));
+
+el('settingsBtn').addEventListener('click', () => {
+  openModal(el('settingsModal'));
+  if(!window.KokoroEngine.isLoaded() && !el('voiceSelect').options.length){
+    const sel = el('voiceSelect');
+    const placeholder = document.createElement('option');
+    placeholder.textContent = 'Loading voices…';
+    sel.appendChild(placeholder);
+    ensureKokoroReady(); // populates voiceSelect itself once the model finishes loading
+  }
+});
+el('settingsModalClose').addEventListener('click', () => closeModal(el('settingsModal')));
+
+loadFilterSettings();
+el('filterToggle').checked = filterEnabled;
+el('filterWords').value = customBadWords.join(', ');
+
+el('filterToggle').addEventListener('change', () => {
+  filterEnabled = el('filterToggle').checked;
+  saveFilterSettings();
+  kokoroCache.clear();
+  if(chapters.length) renderReadingWindow();
+});
+el('filterWords').addEventListener('input', () => {
+  customBadWords = el('filterWords').value.split(',').map(w => w.trim()).filter(Boolean);
+  saveFilterSettings();
+  kokoroCache.clear();
+  if(chapters.length) renderReadingWindow();
+});
+
+// ---------------- Display settings: font size + dark mode ----------------
+function applyFontSize(px){
+  document.documentElement.style.setProperty('--prose-font-size', px + 'px');
+  el('fontSizeReadout').textContent = px + 'px';
+}
+let fontSizePx = 19;
+try{
+  const savedSize = localStorage.getItem('lamplight:fontSize');
+  if(savedSize) fontSizePx = parseInt(savedSize, 10) || 19;
+} catch(e){ /* ignore */ }
+el('fontSizeSlider').value = fontSizePx;
+applyFontSize(fontSizePx);
+el('fontSizeSlider').addEventListener('input', () => {
+  fontSizePx = parseInt(el('fontSizeSlider').value, 10);
+  applyFontSize(fontSizePx);
+  try{ localStorage.setItem('lamplight:fontSize', fontSizePx); } catch(e){ /* ignore */ }
+});
+
+let darkMode = false;
+try{ darkMode = localStorage.getItem('lamplight:darkMode') === '1'; } catch(e){ /* ignore */ }
+document.body.classList.toggle('dark', darkMode);
+el('darkModeToggle').checked = darkMode;
+el('darkModeToggle').addEventListener('change', () => {
+  darkMode = el('darkModeToggle').checked;
+  document.body.classList.toggle('dark', darkMode);
+  try{ localStorage.setItem('lamplight:darkMode', darkMode ? '1' : '0'); } catch(e){ /* ignore */ }
+});
+
+// ---------------- Media Session: lock-screen controls + background playback ----------------
+function updateMediaSessionMetadata(){
+  if(!('mediaSession' in navigator)) return;
+  const ch = chapters[curChapter];
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: ch ? ch.title : 'Reading',
+    artist: el('bookTitle').textContent || 'Lamplight Reader',
+    album: 'Lamplight Reader'
+  });
+}
+if('mediaSession' in navigator){
+  navigator.mediaSession.setActionHandler('play', () => {
+    if(!isPlaying){ isPlaying = true; speakCurrent(); updatePlayButton(); }
+  });
+  navigator.mediaSession.setActionHandler('pause', () => {
+    if(isPlaying){ isPlaying = false; stopPlayback(); updatePlayButton(); }
+  });
+  navigator.mediaSession.setActionHandler('previoustrack', () => el('prevBtn').click());
+  navigator.mediaSession.setActionHandler('nexttrack', () => el('nextBtn').click());
+}
+
+// ---------------- File handling ----------------
+el('fileInput').addEventListener('change', e => { if(e.target.files[0]) handleFile(e.target.files[0]); });
+const dropZone = el('dropZone');
+['dragover','dragenter'].forEach(evt => dropZone.addEventListener(evt, e => { e.preventDefault(); dropZone.style.background='rgba(173,138,82,0.15)'; }));
+['dragleave','drop'].forEach(evt => dropZone.addEventListener(evt, e => { e.preventDefault(); dropZone.style.background=''; }));
+dropZone.addEventListener('drop', e => { if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+
+el('newBookBtn').addEventListener('click', () => {
+  stopPlayback();
+  isPlaying = false;
+  readerView.classList.add('hidden');
+  uploadView.classList.remove('hidden');
+  player.classList.remove('visible');
+  el('headerActions').classList.add('hidden');
+  el('headerTag').classList.remove('hidden');
+  chapters = [];
+  chapterList.innerHTML = '';
+  kokoroCache.clear();
+});
+
+// ---------------- Remembering the last opened book (IndexedDB) ----------------
+// Stores the raw file bytes locally (never uploaded anywhere) so the same book can
+// reopen automatically next visit. Overwrites the single stored entry each time a
+// book is opened, so only the most recent one is ever kept.
+const LAST_BOOK_DB = 'lamplight-reader';
+const LAST_BOOK_STORE = 'files';
+const LAST_BOOK_KEY = 'lastBook';
+
+function openLibraryDB(){
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(LAST_BOOK_DB, 1);
+    req.onupgradeneeded = () => { req.result.createObjectStore(LAST_BOOK_STORE, { keyPath: 'id' }); };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveLastBook(file, buf){
+  try{
+    const db = await openLibraryDB();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(LAST_BOOK_STORE, 'readwrite');
+      tx.objectStore(LAST_BOOK_STORE).put({ id: LAST_BOOK_KEY, name: file.name, type: file.type, data: buf, savedAt: Date.now() });
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  } catch(err){
+    console.warn('Could not save last book for auto-reopen:', err);
+  }
+}
+
+async function loadLastBook(){
+  try{
+    const db = await openLibraryDB();
+    const record = await new Promise((resolve, reject) => {
+      const tx = db.transaction(LAST_BOOK_STORE, 'readonly');
+      const req = tx.objectStore(LAST_BOOK_STORE).get(LAST_BOOK_KEY);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+    db.close();
+    return record;
+  } catch(err){
+    console.warn('Could not read last book:', err);
+    return null;
+  }
+}
+
+async function handleFile(file, opts){
+  opts = opts || {};
+  kokoroCache.clear();
+  loadStatus.textContent = opts.isAutoOpen ? ('Reopening ' + file.name + ' …') : ('Reading ' + file.name + ' …');
+  try{
+    const name = file.name.toLowerCase();
+    let title = file.name.replace(/\.(epub|pdf)$/i,'');
+    const buf = await file.arrayBuffer();
+    if(name.endsWith('.epub')){
+      chapters = await parseEpub(buf);
+    } else if(name.endsWith('.pdf')){
+      chapters = await parsePdf(buf.slice(0)); // pdf.js's worker can detach the buffer it's given, so hand it a copy
+    } else {
+      loadStatus.textContent = 'Please choose an .epub or .pdf file.';
+      return;
+    }
+    if(chapters.length === 0){ loadStatus.textContent = 'Could not find readable text in that file.'; return; }
+
+    bookKey = 'lamplight:' + title + ':' + file.size;
+    el('bookTitle').textContent = title;
+    el('bookSub').textContent = chapters.length + (chapters.length===1?' chapter':' chapters') + ' · ' + file.name;
+
+    renderChapterList();
+    const saved = loadProgress();
+    curChapter = saved ? saved.chapter : 0;
+    curSentence = saved ? saved.sentence : 0;
+    renderReadingWindow();
+
+    uploadView.classList.add('hidden');
+    readerView.classList.remove('hidden');
+    player.classList.add('visible');
+    el('headerActions').classList.remove('hidden');
+    el('headerTag').classList.add('hidden');
+    loadStatus.textContent = '';
+
+    if(saved && (saved.chapter>0 || saved.sentence>0)){
+      showToast('Resumed where you left off (chapter ' + (saved.chapter+1) + ').');
+    }
+
+    saveLastBook(file, buf); // fire-and-forget — remembers this book for next visit
+  } catch(err){
+    console.error(err);
+    loadStatus.textContent = opts.isAutoOpen
+      ? 'Could not reopen your last book automatically — choose a file below.'
+      : 'Something went wrong opening that file: ' + err.message;
+  }
+}
+
+function showToast(msg){
+  loadStatus.textContent = msg;
+}
+
+// ---------------- Shared: build a chapter from an ordered list of paragraph strings ----------------
+function buildChapterFromParagraphTexts(title, paraTexts){
+  const sentences = [];
+  const sentenceParagraph = [];
+  const paragraphs = [];
+  paraTexts.forEach(pText => {
+    const sents = splitSentences(pText);
+    if(!sents.length) return;
+    const startIdx = sentences.length;
+    sents.forEach(s => { sentences.push(s); sentenceParagraph.push(paragraphs.length); });
+    paragraphs.push({ sentenceIndices: sents.map((_, k) => startIdx + k) });
+  });
+  if(!sentences.length) return null;
+  return { title, sentences, sentenceParagraph, paragraphs };
+}
+
+// ---------------- EPUB parsing ----------------
+async function parseEpub(buf){
+  const zip = await JSZip.loadAsync(buf);
+  const containerXml = await zip.file('META-INF/container.xml').async('string');
+  const containerDoc = new DOMParser().parseFromString(containerXml, 'application/xml');
+  const opfPath = containerDoc.querySelector('rootfile').getAttribute('full-path');
+  const opfDir = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/')+1) : '';
+  const opfXml = await zip.file(opfPath).async('string');
+  const opfDoc = new DOMParser().parseFromString(opfXml, 'application/xml');
+
+  const manifest = {};
+  opfDoc.querySelectorAll('manifest > item').forEach(item => {
+    manifest[item.getAttribute('id')] = item.getAttribute('href');
+  });
+  const spineIds = Array.from(opfDoc.querySelectorAll('spine > itemref')).map(i => i.getAttribute('idref'));
+
+  const result = [];
+  for(const id of spineIds){
+    const href = manifest[id];
+    if(!href) continue;
+    const path = opfDir + href;
+    const f = zip.file(path) || zip.file(decodeURIComponent(path));
+    if(!f) continue;
+    const html = await f.async('string');
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    doc.querySelectorAll('script,style').forEach(n => n.remove());
+    if(!doc.body) continue;
+
+    // <br> carries no text of its own, so without this two lines joined by a <br>
+    // would get glued together into one word once we read textContent below.
+    doc.querySelectorAll('br').forEach(br => br.replaceWith(' '));
+
+    // Drop elements explicitly hidden in the markup (some EPUBs hide duplicate/
+    // accessibility-only text this way) so it doesn't get read aloud.
+    doc.querySelectorAll('[hidden], [aria-hidden="true"]').forEach(n => n.remove());
+    doc.querySelectorAll('[style]').forEach(n => {
+      if(/display\s*:\s*none/i.test(n.getAttribute('style') || '')) n.remove();
+    });
+
+    // Some EPUBs mark paragraphs with <p>, others just use <div>. Match both, but
+    // keep only the innermost ("leaf") matches so a wrapper <div> around several
+    // <p> tags doesn't get counted as its own paragraph on top of its children.
+    const blockSelector = 'p, li, blockquote, h1, h2, h3, h4, h5, h6, div';
+    let blocks = Array.from(doc.body.querySelectorAll(blockSelector));
+    blocks = blocks.filter(b => !b.querySelector(blockSelector));
+
+    // textContent (unlike innerText) doesn't depend on the page actually being
+    // rendered/laid out — this document never gets attached to the page, and
+    // innerText silently returns empty text for detached nodes in some browsers.
+    let paraTexts = blocks.map(b => b.textContent.replace(/\s+/g, ' ').trim()).filter(t => t.length > 0);
+    if(!paraTexts.length){
+      const rawWithBreaks = doc.body.textContent; // keep original newlines for a rough paragraph split
+      paraTexts = rawWithBreaks.split(/\n\s*\n+/).map(t => t.replace(/\s+/g, ' ').trim()).filter(Boolean);
+      if(!paraTexts.length){
+        const raw = rawWithBreaks.replace(/\s+/g, ' ').trim();
+        paraTexts = raw.length ? [raw] : [];
+      }
+    }
+    if(!paraTexts.length) continue;
+
+    let title = (doc.querySelector('h1,h2,title') || {}).textContent;
+    title = (title || '').trim() || ('Chapter ' + (result.length+1));
+
+    const chapterObj = buildChapterFromParagraphTexts(title, paraTexts);
+    if(chapterObj) result.push(chapterObj);
+  }
+  return result;
+}
+
+// ---------------- PDF parsing ----------------
+async function parsePdf(buf){
+  const pdf = await pdfjsLib.getDocument({data: buf}).promise;
+  const result = [];
+  const PAGES_PER_CHAPTER = 8;
+  let bucketParas = [];
+  let bucketStart = 1;
+
+  for(let i=1; i<=pdf.numPages; i++){
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const items = content.items;
+
+    // Group text items into lines by their vertical (y) position.
+    const lines = [];
+    let curLine = null;
+    items.forEach(it => {
+      const y = Math.round(it.transform[5]);
+      if(curLine && Math.abs(y - curLine.y) <= 2){
+        curLine.text += it.str;
+      } else {
+        curLine = { y, text: it.str };
+        lines.push(curLine);
+      }
+    });
+
+    // Estimate the typical line-to-line gap, then treat a noticeably bigger
+    // gap as a paragraph break.
+    const gaps = [];
+    for(let k=1;k<lines.length;k++) gaps.push(Math.abs(lines[k-1].y - lines[k].y));
+    const sortedGaps = gaps.slice().sort((a,b)=>a-b);
+    const median = sortedGaps.length ? sortedGaps[Math.floor(sortedGaps.length/2)] : 14;
+
+    let paraLines = [];
+    lines.forEach((ln, idx) => {
+      if(idx > 0){
+        const gap = Math.abs(lines[idx-1].y - ln.y);
+        if(gap > median * 1.6 && paraLines.length){
+          bucketParas.push(paraLines.join(' '));
+          paraLines = [];
+        }
+      }
+      if(ln.text.trim()) paraLines.push(ln.text.trim());
+    });
+    if(paraLines.length) bucketParas.push(paraLines.join(' '));
+
+    if(i % PAGES_PER_CHAPTER === 0 || i === pdf.numPages){
+      const label = bucketStart === i ? ('Page ' + i) : ('Pages ' + bucketStart + '–' + i);
+      const chapterObj = buildChapterFromParagraphTexts(label, bucketParas);
+      if(chapterObj) result.push(chapterObj);
+      bucketParas = [];
+      bucketStart = i+1;
+    }
+  }
+  return result;
+}
+
+// ---------------- Sentence splitting ----------------
+// Small TTS models like Kokoro can clip the end of very long inputs (their duration
+// prediction isn't reliable that far out), so beyond MAX_TTS_CHARS we further split
+// at natural pause points — this affects TTS/highlight granularity only, not meaning.
+const MAX_TTS_CHARS = 200;
+
+function splitOnPunct(text, punct){
+  const re = new RegExp('[^' + punct + ']+' + punct + '+(?:\\s+|$)|[^' + punct + ']+$', 'g');
+  const m = text.match(re);
+  if(!m || m.length < 2) return [text];
+  return m.map(s => s.trim()).filter(Boolean);
+}
+
+function hardWrap(text, maxChars){
+  const words = text.split(' ');
+  const out = [];
+  let cur = '';
+  words.forEach(w => {
+    if(cur && (cur.length + 1 + w.length) > maxChars){
+      out.push(cur);
+      cur = w;
+    } else {
+      cur = cur ? cur + ' ' + w : w;
+    }
+  });
+  if(cur) out.push(cur);
+  return out;
+}
+
+function splitLongClause(text, maxChars){
+  if(text.length <= maxChars) return [text];
+  let parts = splitOnPunct(text, ';');
+  if(parts.length === 1) parts = splitOnPunct(text, ',');
+  if(parts.length === 1) return hardWrap(text, maxChars);
+  const out = [];
+  parts.forEach(p => out.push(...splitLongClause(p.trim(), maxChars)));
+  return out;
+}
+
+// Protects common abbreviations and initials (Mr. Mrs. Dr. St. — and things like "C. S. Lewis")
+// from being mistaken for sentence endings, by temporarily hiding their periods.
+const ABBR_RE = /\b(Mr|Mrs|Ms|Dr|St|Mt|Prof|Rev|Gen|Col|Capt|Lt|Sgt|Sr|Jr|vs|etc|Ph\.D|i\.e|e\.g)\./g;
+const INITIAL_RE = /\b([A-Z])\.(?=\s*[A-Z]\.|\s+[A-Z]\b)/g;
+function protectAbbreviations(text){
+  return text.replace(ABBR_RE, (m, word) => word + '\u0001')
+             .replace(INITIAL_RE, (m, letter) => letter + '\u0001');
+}
+function restoreAbbreviations(text){
+  return text.replace(/\u0001/g, '.');
+}
+
+// A sentence terminator is very often followed immediately by a closing quote or
+// bracket with no space ("...that means." with no gap before the closing quote) —
+// without allowing for that, the regex below fails to match at all and silently
+// drops the whole sentence.
+const SENT_RE = /[^.!?]+[.!?]+[)\]'"\u2019\u201D]*(?:\s+|$)|[^.!?]+$/g;
+
+// Common verbs used in dialogue attribution tags ("...," said Peter / "...?" asked Susan).
+const DIALOGUE_TAG_VERBS = 'said|asked|replied|answered|cried|shouted|whispered|muttered|exclaimed|continued|added|began|called|retorted|murmured|sighed|snapped|gasped|sobbed|roared|growled|chuckled|laughed|wondered|declared|announced|remarked|grumbled|protested|went on';
+
+// A quoted question or exclamation immediately followed by its attribution tag
+// ("Are you coming?" asked Peter.) is one continuous thought, not two sentences —
+// but SENT_RE would otherwise treat the ?/! as a hard sentence break, giving it
+// its own separate TTS chunk with an audible gap before "asked Peter." Hide the
+// punctuation here (same trick as protectAbbreviations) so it stays one chunk;
+// the real ? or ! is restored below, so its intonation still comes through.
+const DIALOGUE_END_RE = new RegExp('([?!])([\'"\u2019\u201D]+)(\\s+)(?=(?:\\w+\\s+)?(?:' + DIALOGUE_TAG_VERBS + ')\\b)', 'gi');
+function protectDialogueEndings(text){
+  return text.replace(DIALOGUE_END_RE, (m, punct, quote, space) => (punct === '?' ? '\u0002' : '\u0003') + quote + space);
+}
+function restoreDialogueEndings(text){
+  return text.replace(/\u0002/g, '?').replace(/\u0003/g, '!');
+}
+
+function splitSentences(text){
+  const cleaned = protectDialogueEndings(protectAbbreviations(text.replace(/\s+/g, ' ').trim()));
+  if(!cleaned) return [];
+  const matches = cleaned.match(SENT_RE) || [cleaned];
+  const rough = matches.map(s => restoreDialogueEndings(restoreAbbreviations(s.trim()))).filter(s => s.length > 1);
+  const out = [];
+  rough.forEach(s => out.push(...splitLongClause(s, MAX_TTS_CHARS)));
+  return out;
+}
+
+// ---------------- Language filter ----------------
+const DEFAULT_BAD_WORDS = ['fuck','shit','bitch','bastard','asshole','cunt','slut','whore','dick','cock','pussy','twat','douche','goddamn','bullshit'];
+
+function loadFilterSettings(){
+  try{
+    const raw = localStorage.getItem('lamplight:filterSettings');
+    if(raw){
+      const obj = JSON.parse(raw);
+      filterEnabled = !!obj.enabled;
+      customBadWords = Array.isArray(obj.custom) ? obj.custom : [];
+    }
+  } catch(e){ /* ignore */ }
+}
+function saveFilterSettings(){
+  try{
+    localStorage.setItem('lamplight:filterSettings', JSON.stringify({enabled: filterEnabled, custom: customBadWords}));
+  } catch(e){ /* ignore */ }
+}
+
+function badWordsRegex(){
+  const words = [...DEFAULT_BAD_WORDS, ...customBadWords].map(w => w.trim()).filter(Boolean);
+  if(!words.length) return null;
+  const escaped = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return new RegExp('\\b(' + escaped.join('|') + ')\\w*', 'gi');
+}
+
+function displayFilteredText(text){
+  if(!filterEnabled) return text;
+  const re = badWordsRegex();
+  if(!re) return text;
+  return text.replace(re, m => m[0] + '*'.repeat(Math.max(1, m.length - 1)));
+}
+
+function speechFilteredText(text){
+  let out = text;
+  if(filterEnabled){
+    const re = badWordsRegex();
+    if(re) out = out.replace(re, '').replace(/\s{2,}/g, ' ').trim();
+  }
+  return smoothDialogueTags(out);
+}
+
+// A comma right before a closing quote and a speech-tag verb ("...won't," said Peter.)
+// is just grammatical glue, not a place anyone would actually pause when speaking —
+// but TTS models read it as an ordinary comma pause. Strip it for speech only; the
+// displayed text keeps its normal, correctly-punctuated form.
+const DIALOGUE_COMMA_RE = new RegExp(',(\\s*[\'"\u2019\u201D]+)(\\s+)(?=(?:\\w+\\s+)?(?:' + DIALOGUE_TAG_VERBS + ')\\b)', 'gi');
+function smoothDialogueTags(text){
+  return text.replace(DIALOGUE_COMMA_RE, '$1$2');
+}
+
+// ---------------- Rendering ----------------
+function buildChapterListInto(container){
+  container.innerHTML = '';
+  chapters.forEach((ch, idx) => {
+    const div = document.createElement('div');
+    const isActive = idx === curChapter;
+    div.className = 'toc-row' + (isActive ? ' active' : '');
+    div.dataset.idx = idx;
+
+    const label = document.createElement('span');
+    label.textContent = ch.title;
+    div.appendChild(label);
+
+    if(isActive){
+      div.insertAdjacentHTML('beforeend', '<svg class="check" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="5,13 10,18 19,6"/></svg>');
+    }
+
+    div.addEventListener('click', () => {
+      stopPlayback();
+      isPlaying = false;
+      updatePlayButton();
+      curChapter = idx; curSentence = 0;
+      renderReadingWindow();
+      renderChapterList();
+      updateProgressBar();
+      saveProgress();
+      closeModal(el('tocModal'));
+    });
+    container.appendChild(div);
+  });
+}
+
+function renderChapterList(){
+  buildChapterListInto(chapterList);
+  buildChapterListInto(el('tocModalList'));
+}
+
+function currentParagraphIndex(){
+  const ch = chapters[curChapter];
+  if(!ch) return 0;
+  return ch.sentenceParagraph[curSentence] ?? 0;
+}
+
+function makeParaBlock(pIdx, variant){
+  const wrap = document.createElement('div');
+  const ch = chapters[curChapter];
+  if(pIdx < 0 || !ch || pIdx >= ch.paragraphs.length){
+    wrap.className = 'para-block para-empty ' + variant;
+    wrap.textContent = variant === 'prev' ? '— start of chapter —' : '— end of chapter —';
+    return wrap;
+  }
+  wrap.className = 'para-block ' + variant;
+  const para = ch.paragraphs[pIdx];
+  para.sentenceIndices.forEach(si => {
+    const span = document.createElement('span');
+    span.className = 's';
+    span.textContent = displayFilteredText(ch.sentences[si]) + ' ';
+    span.dataset.i = si;
+    span.addEventListener('click', () => {
+      stopPlayback();
+      curSentence = si;
+      if(isPlaying) speakCurrent(); else { renderReadingWindow(); updateProgressBar(); }
+      saveProgress();
+    });
+    wrap.appendChild(span);
+  });
+  return wrap;
+}
+
+function renderReadingWindow(){
+  proseText.innerHTML = '';
+  const paraIdx = currentParagraphIndex();
+  proseText.appendChild(makeParaBlock(paraIdx - 1, 'prev'));
+  proseText.appendChild(makeParaBlock(paraIdx, 'current'));
+  proseText.appendChild(makeParaBlock(paraIdx + 1, 'next'));
+  highlightCurrent();
+  updateMediaSessionMetadata();
+}
+
+function highlightCurrent(){
+  proseText.querySelectorAll('.s').forEach(s => s.classList.remove('current'));
+  const cur = proseText.querySelector('.s[data-i="'+curSentence+'"]');
+  if(cur){ cur.classList.add('current'); cur.scrollIntoView({block:'center', behavior:'smooth'}); }
+}
+
+function updateProgressBar(){
+  const total = chapters[curChapter].sentences.length;
+  const pct = total ? Math.round(((curSentence)/total)*100) : 0;
+  el('lampProgressFill').style.width = pct + '%';
+  el('posLabel').textContent = (curSentence+1) + ' / ' + total;
+}
+
+// ---------------- Speech: shared controls ----------------
+function stopPlayback(){
+  playToken++; // invalidates any in-flight kokoro generation/playback continuations
+  if(currentAudioEl){
+    currentAudioEl.onended = null;
+    currentAudioEl.pause();
+    currentAudioEl = null;
+  }
+}
+
+function friendlyVoiceName(id){
+  // Kokoro ids look like "af_heart", "bm_george" — a=American, b=British; f=female, m=male
+  const region = id[0] === 'a' ? 'American' : id[0] === 'b' ? 'British' : id[0].toUpperCase();
+  const gender = id[1] === 'f' ? 'female' : id[1] === 'm' ? 'male' : '';
+  const name = id.slice(3).replace(/^\w/, c => c.toUpperCase());
+  return `${name} — ${region} ${gender}`.trim();
+}
+
+// Known standard voice ids for onnx-community/Kokoro-82M-v1.0-ONNX, used only if the
+// library's own list_voices() call comes back empty for some reason.
+const FALLBACK_KOKORO_VOICES = ['af_heart','af_bella','af_nicole','af_sarah','af_sky','am_adam','am_michael','am_fenrir','bf_emma','bf_isabella','bm_george','bm_lewis'];
+
+function populateKokoroVoiceSelect(){
+  const sel = el('voiceSelect');
+  sel.innerHTML = '';
+  let list = window.KokoroEngine.listVoices();
+  if(!list || !list.length){
+    console.warn('Kokoro listVoices() returned nothing — falling back to a known voice list.');
+    list = FALLBACK_KOKORO_VOICES;
+  }
+  list.forEach(id => {
+    const opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = friendlyVoiceName(id);
+    sel.appendChild(opt);
+  });
+  let saved = null;
+  try{ saved = localStorage.getItem('lamplight:voice'); } catch(e){ /* ignore */ }
+  if(saved && list.indexOf(saved) >= 0){
+    sel.value = saved;
+  } else if(list.indexOf('af_heart') >= 0){
+    sel.value = 'af_heart';
+  }
+}
+
+// Loads the Kokoro model on first use (downloads once, then cached by the browser).
+async function ensureKokoroReady(){
+  if(window.KokoroEngine.isLoaded()){
+    if(!el('voiceSelect').options.length) populateKokoroVoiceSelect();
+    return true;
+  }
+  const status = el('engineStatus');
+  status.textContent = 'Downloading neural voice model…';
+  try{
+    await window.KokoroEngine.ensureLoaded(progress => {
+      if(progress && progress.status === 'progress' && progress.progress != null){
+        status.textContent = 'Downloading model… ' + Math.round(progress.progress) + '%';
+      }
+    });
+    populateKokoroVoiceSelect();
+    status.textContent = '';
+    return true;
+  } catch(err){
+    console.error(err);
+    status.textContent = 'Could not load the neural voice (needs internet the first time).';
+    return false;
+  }
+}
+
+// Rejects with a clear message if the wrapped promise never settles in time,
+// instead of leaving playback stuck on "Generating…" forever.
+function withTimeout(promise, ms, label){
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(label + ' timed out after ' + Math.round(ms/1000) + 's')), ms);
+    promise.then(
+      v => { clearTimeout(t); resolve(v); },
+      e => { clearTimeout(t); reject(e); }
+    );
+  });
+}
+
+// Fetch (and cache) the audio blob for a given sentence, generating it if needed.
+function getKokoroAudio(chapterIdx, sentenceIdx){
+  const key = chapterIdx + '-' + sentenceIdx;
+  if(!kokoroCache.has(key)){
+    const ch = chapters[chapterIdx];
+    if(!ch || !ch.sentences[sentenceIdx]) return null;
+    const voice = el('voiceSelect').value || 'af_heart';
+    const speed = parseFloat(el('rateSlider').value);
+    const text = speechFilteredText(ch.sentences[sentenceIdx]) || ' ';
+    console.time('kokoro-generate:' + key);
+    const promise = withTimeout(window.KokoroEngine.generateBlob(text, voice, speed), 60000, 'Voice generation')
+      .finally(() => console.timeEnd('kokoro-generate:' + key));
+    promise.catch(() => { kokoroCache.delete(key); }); // don't cache a permanent failure — allow retry next time
+    kokoroCache.set(key, promise);
+  }
+  return kokoroCache.get(key);
+}
+
+function speakCurrent(){
+  const ch = chapters[curChapter];
+  if(!ch || curSentence >= ch.sentences.length){
+    // chapter finished — advance
+    if(curChapter < chapters.length - 1){
+      curChapter++; curSentence = 0;
+      renderReadingWindow();
+      renderChapterList();
+      speakCurrent();
+    } else {
+      isPlaying = false;
+      updatePlayButton();
+    }
+    return;
+  }
+  speakCurrentKokoro();
+}
+
+async function speakCurrentKokoro(){
+  const myToken = playToken;
+  const chapterIdx = curChapter, sentenceIdx = curSentence;
+  renderReadingWindow();
+  updateProgressBar();
+
+  if(!window.KokoroEngine.isLoaded()){
+    const ok = await ensureKokoroReady();
+    if(myToken !== playToken) return;
+    if(!ok){ isPlaying = false; updatePlayButton(); return; }
+  }
+
+  el('engineStatus').textContent = 'Generating…';
+  let blob;
+  try{
+    blob = await getKokoroAudio(chapterIdx, sentenceIdx);
+  } catch(err){
+    console.error(err);
+    const detail = err && err.message ? err.message : 'unknown error';
+    el('engineStatus').textContent = 'Voice generation failed (' + detail + ') — skipping.';
+    if(myToken !== playToken) return;
+    if(isPlaying){ curSentence++; saveProgress(); speakCurrent(); }
+    return;
+  }
+  if(myToken !== playToken || !blob) return; // playback was stopped/changed while we waited
+  el('engineStatus').textContent = '';
+
+  const url = URL.createObjectURL(blob);
+  const audioEl = el('ttsAudio'); // reuse one persistent element so iOS treats this as one continuous background session
+  currentAudioEl = audioEl;
+  if(audioEl.dataset.blobUrl) URL.revokeObjectURL(audioEl.dataset.blobUrl);
+  audioEl.src = url;
+  audioEl.dataset.blobUrl = url;
+  audioEl.onended = () => {
+    if(myToken !== playToken || !isPlaying) return;
+    curSentence++;
+    saveProgress();
+    speakCurrent();
+  };
+  audioEl.play().catch(err => console.error(err));
+
+  // Prefetch a couple of sentences ahead (crossing into the next chapter if needed)
+  // so there's a buffer to absorb any slow generations, not just a single one.
+  const lookahead = [];
+  let c = chapterIdx, s = sentenceIdx;
+  for(let n = 0; n < 2; n++){
+    s++;
+    if(s >= chapters[c].sentences.length){
+      c++; s = 0;
+      if(c >= chapters.length || !chapters[c].sentences.length) break;
+    }
+    lookahead.push([c, s]);
+  }
+  lookahead.forEach(([ci, si]) => getKokoroAudio(ci, si));
+}
+
+const PLAY_ICON = '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><polygon points="8,5 8,19 19,12"/></svg>';
+const PAUSE_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4.2" height="14" rx="1"/><rect x="13.8" y="5" width="4.2" height="14" rx="1"/></svg>';
+
+function updatePlayButton(){
+  const btn = el('playBtn');
+  btn.innerHTML = isPlaying ? PAUSE_ICON : PLAY_ICON;
+  btn.classList.toggle('is-playing', isPlaying);
+  btn.setAttribute('aria-label', isPlaying ? 'Pause' : 'Play');
+  if('mediaSession' in navigator) navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+}
+
+el('playBtn').addEventListener('click', () => {
+  if(isPlaying){
+    isPlaying = false;
+    stopPlayback();
+  } else {
+    isPlaying = true;
+    speakCurrent();
+  }
+  updatePlayButton();
+});
+
+el('prevBtn').addEventListener('click', () => {
+  stopPlayback();
+  if(curSentence > 0) curSentence--;
+  renderReadingWindow(); updateProgressBar(); saveProgress();
+  if(isPlaying) speakCurrent();
+});
+el('nextBtn').addEventListener('click', () => {
+  stopPlayback();
+  curSentence++;
+  if(curSentence >= chapters[curChapter].sentences.length) curSentence = chapters[curChapter].sentences.length - 1;
+  renderReadingWindow(); updateProgressBar(); saveProgress();
+  if(isPlaying) speakCurrent();
+});
+el('rateSlider').addEventListener('input', () => {
+  el('rateLabel').textContent = parseFloat(el('rateSlider').value).toFixed(2) + '×';
+  kokoroCache.clear();
+});
+el('voiceSelect').addEventListener('change', () => {
+  kokoroCache.clear();
+  try{ localStorage.setItem('lamplight:voice', el('voiceSelect').value); } catch(e){ /* ignore */ }
+});
+el('lampProgress').addEventListener('click', e => {
+  const rect = e.currentTarget.getBoundingClientRect();
+  const pct = (e.clientX - rect.left) / rect.width;
+  const total = chapters[curChapter].sentences.length;
+  curSentence = Math.min(total-1, Math.max(0, Math.round(pct * total)));
+  stopPlayback();
+  renderReadingWindow(); updateProgressBar(); saveProgress();
+  if(isPlaying) speakCurrent();
+});
+
+// ---------------- Progress persistence ----------------
+function saveProgress(){
+  if(!bookKey) return;
+  try{
+    localStorage.setItem(bookKey, JSON.stringify({chapter: curChapter, sentence: curSentence}));
+  }catch(e){ /* storage full or unavailable — ignore */ }
+}
+function loadProgress(){
+  if(!bookKey) return null;
+  try{
+    const raw = localStorage.getItem(bookKey);
+    return raw ? JSON.parse(raw) : null;
+  }catch(e){ return null; }
+}
+
+window.addEventListener('beforeunload', () => stopPlayback());
+
+// ---------------- Auto-reopen the last book on load ----------------
+(async function autoOpenLastBook(){
+  const record = await loadLastBook();
+  if(!record || !record.data || !record.data.byteLength) return;
+  loadStatus.textContent = 'Reopening ' + record.name + ' …';
+  try{
+    const file = new File([record.data], record.name, { type: record.type || '' });
+    await handleFile(file, { isAutoOpen: true });
+  } catch(err){
+    console.warn('Auto-reopen failed:', err);
+    loadStatus.textContent = '';
+  }
+})();
+</script>
+</body>
+</html>
