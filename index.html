@@ -586,18 +586,17 @@
     async ensureLoaded(onProgress){
       if(ttsInstance) return ttsInstance;
       if(!loadingPromise){
-        const hasWebGPU = typeof navigator !== 'undefined' && !!navigator.gpu;
-        const attempt = (device, dtype) => KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", {
-          dtype, device, progress_callback: onProgress
-        });
-        loadingPromise = (hasWebGPU
-          ? attempt("webgpu", "fp32").catch(err => {
-              console.warn('WebGPU load failed, falling back to WASM:', err);
-              return attempt("wasm", "q8");
-            })
-          : attempt("wasm", "q8")
-        ).then(t => { ttsInstance = t; return t; })
-         .catch(err => { loadingPromise = null; throw err; });
+        // WASM-only, deliberately. WebGPU is still immature for heavy compute
+        // workloads in WebKit (Safari, and every browser on iOS since they all
+        // share Safari's engine there) — it can crash the whole tab's rendering
+        // process outright, a failure mode that happens below JavaScript and
+        // can't be caught or recovered from with try/catch.
+        loadingPromise = KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", {
+          dtype: "q8",
+          device: "wasm",
+          progress_callback: onProgress
+        }).then(t => { ttsInstance = t; return t; })
+          .catch(err => { loadingPromise = null; throw err; });
       }
       return loadingPromise;
     },
