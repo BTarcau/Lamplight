@@ -378,6 +378,13 @@
     border-color: rgba(255,255,255,0.14);
   }
   .footnote{ font-size: 12.5px; color: var(--ink-soft); padding: 0 6px 6px; line-height:1.5; }
+  .preview-btn{
+    background: rgba(63,93,72,0.12); border:none; cursor:pointer;
+    color: var(--lamp-dark); width: 28px; height:28px; border-radius:50%;
+    display:flex; align-items:center; justify-content:center; flex-shrink:0;
+  }
+  body.dark .preview-btn{ background: rgba(111,163,126,0.18); color: var(--lamp); }
+  .preview-btn:disabled{ opacity:0.5; cursor:default; }
 
   /* ---------- iOS-style switch ---------- */
   .ios-switch{ position:relative; display:inline-block; width:46px; height:28px; flex-shrink:0; }
@@ -584,7 +591,13 @@
         <label style="display:flex; align-items:center; gap:7px; margin-top:10px; font-size:13.5px; color:var(--ink-soft); cursor:pointer;">
           <input type="checkbox" id="pronMatchCase" style="width:16px;height:16px;"> Match case
         </label>
-        <button class="btn" id="pronAddBtn" style="margin-top:12px; width:100%;">Add rule</button>
+        <div style="display:flex; gap:8px; margin-top:12px;">
+          <button class="chip" id="pronPreviewBtn" style="flex:1; justify-content:center;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="8,5 8,19 19,12"/></svg>
+            Preview
+          </button>
+          <button class="btn" id="pronAddBtn" style="flex:1;">Add rule</button>
+        </div>
       </div>
     </div>
     <p class="footnote">Fixes mispronounced names or words when read aloud — matches the text anywhere it appears. Leave "Say instead" blank to skip that word/phrase entirely. Applies only to speech; the on-screen text is unchanged.</p>
@@ -756,6 +769,11 @@ el('filterWords').addEventListener('input', () => {
 
 loadPronunciationRules();
 renderPronunciationList();
+el('pronPreviewBtn').addEventListener('click', () => {
+  const find = el('pronFindInput').value.trim();
+  const replace = el('pronReplaceInput').value.trim();
+  speakPreviewText(replace || find, el('pronPreviewBtn'));
+});
 el('pronAddBtn').addEventListener('click', () => {
   const find = el('pronFindInput').value.trim();
   if(!find) return;
@@ -1308,10 +1326,73 @@ function renderPronunciationList(){
       renderPronunciationList();
       neuralAudioCache.clear();
     });
+    const previewBtn = document.createElement('button');
+    previewBtn.className = 'preview-btn';
+    previewBtn.setAttribute('aria-label', 'Preview pronunciation');
+    previewBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="8,5 8,19 19,12"/></svg>';
+    previewBtn.addEventListener('click', () => speakPreviewText(rule.replace || rule.find, previewBtn));
+    const btnGroup = document.createElement('div');
+    btnGroup.style.display = 'flex';
+    btnGroup.style.gap = '8px';
+    btnGroup.style.flexShrink = '0';
+    btnGroup.appendChild(previewBtn);
+    btnGroup.appendChild(delBtn);
     row.appendChild(label);
-    row.appendChild(delBtn);
+    row.appendChild(btnGroup);
     container.appendChild(row);
   });
+}
+
+// Speaks a short one-off snippet through whichever voice engine is currently active —
+// used to test a pronunciation rule without touching the book's own playback state.
+async function speakPreviewText(text, btn){
+  text = (text || '').trim();
+  if(!text) return;
+  stopPlayback();
+  if(isPlaying){ isPlaying = false; updatePlayButton(); }
+
+  let restoreBtn = null;
+  if(btn){
+    const original = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span style="font-size:10px;">…</span>';
+    restoreBtn = () => { btn.disabled = false; btn.innerHTML = original; };
+  }
+  try{
+    if(engine === 'kokoro'){
+      const ok = await ensureKokoroReady();
+      if(!ok) return;
+      const voice = el('voiceSelect').value || 'af_heart';
+      const speed = parseFloat(el('rateSlider').value);
+      const blob = await window.KokoroEngine.generateBlob(text, voice, speed);
+      playPreviewBlob(blob);
+    } else if(engine === 'piper'){
+      const voiceId = el('voiceSelect').value;
+      if(!voiceId) return;
+      const ready = await ensurePiperVoiceReady(voiceId);
+      if(!ready) return;
+      const blob = await window.PiperEngine.generateBlob(text, voiceId);
+      playPreviewBlob(blob);
+    } else if(typeof speechSynthesis !== 'undefined'){
+      speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(text);
+      const idx = el('voiceSelect').value;
+      if(systemVoices[idx]) utter.voice = systemVoices[idx];
+      utter.rate = parseFloat(el('rateSlider').value);
+      speechSynthesis.speak(utter);
+    }
+  } catch(err){
+    console.error('Preview failed:', err);
+  } finally {
+    if(restoreBtn) restoreBtn();
+  }
+}
+
+function playPreviewBlob(blob){
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  audio.addEventListener('ended', () => URL.revokeObjectURL(url));
+  audio.play().catch(err => console.error(err));
 }
 
 // A comma right before a closing quote and a speech-tag verb ("...won't," said Peter.)
