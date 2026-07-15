@@ -1524,6 +1524,60 @@ function getKokoroAudio(chapterIdx, sentenceIdx){
   return neuralAudioCache.get(key);
 }
 
+function encodeWavFloat32(samples, sampleRate){
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  const writeStr = (offset, str) => { for(let i=0;i<str.length;i++) view.setUint8(offset+i, str.charCodeAt(i)); };
+  writeStr(0,'RIFF'); view.setUint32(4, 36 + samples.length*2, true); writeStr(8,'WAVE');
+  writeStr(12,'fmt '); view.setUint32(16,16,true); view.setUint16(20,1,true); view.setUint16(22,1,true);
+  view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate*2, true);
+  view.setUint16(32,2,true); view.setUint16(34,16,true);
+  writeStr(36,'data'); view.setUint32(40, samples.length*2, true);
+  let offset = 44;
+  for(let i=0;i<samples.length;i++, offset+=2){
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s*0x8000 : s*0x7FFF, true);
+  }
+  return new Blob([buffer], {type:'audio/wav'});
+}
+
+// VITS-based models like Piper bake a bit of silence into the start/end of every
+// clip. With one clip per sentence, those silences stack up into an unnaturally
+// long gap between sentences — trim them down to a small, natural pause instead.
+async function trimTrailingSilence(blob, paddingMs){
+  paddingMs = paddingMs != null ? paddingMs : 60;
+  try{
+    const arrayBuffer = await blob.arrayBuffer();
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new AudioCtx();
+    const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+    const sampleRate = audioBuffer.sampleRate;
+    const data = audioBuffer.getChannelData(0);
+
+    let maxAbs = 0;
+    for(let i = 0; i < data.length; i++){
+      const a = Math.abs(data[i]);
+      if(a > maxAbs) maxAbs = a;
+    }
+    const threshold = Math.max(maxAbs * 0.02, 0.005);
+
+    let start = 0, end = data.length - 1;
+    while(start < data.length && Math.abs(data[start]) < threshold) start++;
+    while(end > start && Math.abs(data[end]) < threshold) end--;
+
+    const padSamples = Math.floor(sampleRate * paddingMs / 1000);
+    start = Math.max(0, start - padSamples);
+    end = Math.min(data.length - 1, end + padSamples);
+
+    ctx.close();
+    if(end <= start) return blob; // clip looked fully silent — bail out safely, keep original
+    return encodeWavFloat32(data.slice(start, end + 1), sampleRate);
+  } catch(err){
+    console.warn('Silence trim failed, using original audio:', err);
+    return blob;
+  }
+}
+
 function getPiperAudio(chapterIdx, sentenceIdx){
   const key = chapterIdx + '-' + sentenceIdx;
   if(!neuralAudioCache.has(key)){
@@ -1534,6 +1588,7 @@ function getPiperAudio(chapterIdx, sentenceIdx){
     const text = speechFilteredText(ch.sentences[sentenceIdx]) || ' ';
     console.time('piper-generate:' + key);
     const promise = withTimeout(window.PiperEngine.generateBlob(text, voiceId), 60000, 'Voice generation')
+      .then(blob => trimTrailingSilence(blob))
       .finally(() => console.timeEnd('piper-generate:' + key));
     promise.catch(() => { neuralAudioCache.delete(key); });
     neuralAudioCache.set(key, promise);
