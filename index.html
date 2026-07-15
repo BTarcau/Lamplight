@@ -368,6 +368,15 @@
     background: rgba(255,255,255,0.06);
     border-color: rgba(255,255,255,0.14);
   }
+  .pron-input{
+    flex:1; min-width:110px; padding:9px 10px; border-radius:8px;
+    border:1px solid rgba(0,0,0,0.14); font-size:14px;
+    background: rgba(0,0,0,0.03); color: var(--ink);
+  }
+  body.dark .pron-input{
+    background: rgba(255,255,255,0.06);
+    border-color: rgba(255,255,255,0.14);
+  }
   .footnote{ font-size: 12.5px; color: var(--ink-soft); padding: 0 6px 6px; line-height:1.5; }
 
   /* ---------- iOS-style switch ---------- */
@@ -562,6 +571,23 @@
       </div>
     </div>
     <p class="footnote">Filtering muffles matched words in speech and masks them on screen. Applies to every book.</p>
+
+    <h2 style="font-family:'Source Serif 4', serif; font-size:16px; margin:22px 4px 10px;">Pronunciation</h2>
+    <div class="settings-group" id="pronunciationGroup"></div>
+    <div class="settings-group">
+      <div class="settings-row settings-row-stacked">
+        <span class="settings-row-label">Add a rule</span>
+        <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
+          <input type="text" id="pronFindInput" class="pron-input" placeholder="As written (e.g. Ludger)">
+          <input type="text" id="pronReplaceInput" class="pron-input" placeholder="Say instead (blank = skip)">
+        </div>
+        <label style="display:flex; align-items:center; gap:7px; margin-top:10px; font-size:13.5px; color:var(--ink-soft); cursor:pointer;">
+          <input type="checkbox" id="pronMatchCase" style="width:16px;height:16px;"> Match case
+        </label>
+        <button class="btn" id="pronAddBtn" style="margin-top:12px; width:100%;">Add rule</button>
+      </div>
+    </div>
+    <p class="footnote">Fixes mispronounced names or words when read aloud — matches the text anywhere it appears. Leave "Say instead" blank to skip that word/phrase entirely. Applies only to speech; the on-screen text is unchanged.</p>
   </div>
 </div>
 
@@ -669,6 +695,7 @@ let playToken = 0;            // increments whenever playback is stopped, to can
 let filterEnabled = true;
 let engine = 'system'; // 'system' (device's built-in voices) or 'kokoro' (downloaded neural voice)
 let systemVoices = [];
+let pronunciationRules = []; // [{find, replace, matchCase}] — applied to speech only
 let customBadWords = [];
 
 const el = id => document.getElementById(id);
@@ -725,6 +752,22 @@ el('filterWords').addEventListener('input', () => {
   saveFilterSettings();
   neuralAudioCache.clear();
   if(chapters.length) renderReadingWindow();
+});
+
+loadPronunciationRules();
+renderPronunciationList();
+el('pronAddBtn').addEventListener('click', () => {
+  const find = el('pronFindInput').value.trim();
+  if(!find) return;
+  const replace = el('pronReplaceInput').value.trim();
+  const matchCase = el('pronMatchCase').checked;
+  pronunciationRules.push({ find, replace, matchCase });
+  savePronunciationRules();
+  renderPronunciationList();
+  el('pronFindInput').value = '';
+  el('pronReplaceInput').value = '';
+  el('pronMatchCase').checked = false;
+  neuralAudioCache.clear();
 });
 
 // ---------------- Display settings: font size + dark mode ----------------
@@ -1200,12 +1243,75 @@ function displayFilteredText(text){
 }
 
 function speechFilteredText(text){
-  let out = text;
+  let out = applyPronunciationRules(text);
   if(filterEnabled){
     const re = badWordsRegex();
     if(re) out = out.replace(re, '').replace(/\s{2,}/g, ' ').trim();
   }
   return smoothDialogueTags(out);
+}
+
+// ---------------- Pronunciation dictionary ----------------
+// Lets the person fix names/words the voice mispronounces — matches the "as
+// written" text anywhere it appears and swaps in the "say instead" text, for
+// speech only. Blank "say instead" means skip that word/phrase entirely.
+function loadPronunciationRules(){
+  try{
+    const raw = localStorage.getItem('lamplight:pronunciationRules');
+    pronunciationRules = raw ? (JSON.parse(raw) || []) : [];
+  } catch(e){ pronunciationRules = []; }
+}
+function savePronunciationRules(){
+  try{ localStorage.setItem('lamplight:pronunciationRules', JSON.stringify(pronunciationRules)); } catch(e){ /* ignore */ }
+}
+function applyPronunciationRules(text){
+  if(!pronunciationRules.length) return text;
+  let out = text;
+  pronunciationRules.forEach(rule => {
+    if(!rule || !rule.find) return;
+    const escaped = rule.find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(escaped, rule.matchCase ? 'g' : 'gi');
+    out = out.replace(re, rule.replace || '');
+  });
+  return out.replace(/\s{2,}/g, ' ').trim();
+}
+
+function renderPronunciationList(){
+  const container = el('pronunciationGroup');
+  container.innerHTML = '';
+  if(!pronunciationRules.length){
+    const row = document.createElement('div');
+    row.className = 'settings-row';
+    const label = document.createElement('span');
+    label.className = 'settings-row-label';
+    label.style.fontWeight = '400';
+    label.style.color = 'var(--ink-soft)';
+    label.textContent = 'No rules yet';
+    row.appendChild(label);
+    container.appendChild(row);
+    return;
+  }
+  pronunciationRules.forEach((rule, idx) => {
+    const row = document.createElement('div');
+    row.className = 'settings-row';
+    const label = document.createElement('span');
+    label.className = 'settings-row-label';
+    label.style.fontWeight = '400';
+    label.textContent = '"' + rule.find + '" → ' + (rule.replace ? ('"' + rule.replace + '"') : 'Skip') + (rule.matchCase ? ' · match case' : '');
+    const delBtn = document.createElement('button');
+    delBtn.className = 'modal-close';
+    delBtn.setAttribute('aria-label', 'Remove rule');
+    delBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>';
+    delBtn.addEventListener('click', () => {
+      pronunciationRules.splice(idx, 1);
+      savePronunciationRules();
+      renderPronunciationList();
+      neuralAudioCache.clear();
+    });
+    row.appendChild(label);
+    row.appendChild(delBtn);
+    container.appendChild(row);
+  });
 }
 
 // A comma right before a closing quote and a speech-tag verb ("...won't," said Peter.)
@@ -1742,7 +1848,7 @@ async function speakCurrentPiper(){
   // re-encoding the audio (which misfired badly on real output), just stop playback
   // a small fixed amount early — capped so a short clip never loses more than 30%
   // of itself, so this can't misfire into cutting off real speech.
-  const PIPER_TAIL_TRIM_SEC = 0.25;
+  const PIPER_TAIL_TRIM_SEC = 0.4;
   let advanced = false;
   const advanceToNext = () => {
     if(advanced) return;
