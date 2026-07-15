@@ -506,8 +506,21 @@
 
     <div class="settings-group">
       <div class="settings-row">
+        <span class="settings-row-label">Voice engine</span>
+        <select id="engineSelect" class="native-select">
+          <option value="system">System voice</option>
+          <option value="kokoro">Kokoro AI voice (offline)</option>
+          <option value="piper">Piper AI voice (offline)</option>
+        </select>
+      </div>
+      <div class="settings-row">
         <span class="settings-row-label">Voice</span>
-        <select id="voiceSelect" class="native-select"></select>
+        <div class="speed-control">
+          <select id="voiceSelect" class="native-select"></select>
+          <button class="ctrl-btn" id="refreshVoicesBtn" aria-label="Refresh voice list" style="color:var(--ink-soft); flex-shrink:0;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15.3-6.4L21 8M3 12a9 9 0 0 0 15.3 6.4L21 16M21 8v-4m0 4h-4M21 16v4m0-4h-4"/></svg>
+          </button>
+        </div>
       </div>
       <div class="settings-row">
         <span class="settings-row-label">Speed</span>
@@ -618,6 +631,29 @@
   };
 </script>
 
+<script type="module">
+  // Piper TTS — a different, lighter-weight neural voice model than Kokoro, worth
+  // offering as an alternative since some devices run it more smoothly. Each voice
+  // is its own separate download (unlike Kokoro's one bundle with many voices),
+  // fetched only when that specific voice is actually used.
+  import * as piperTTS from "https://cdn.jsdelivr.net/npm/@mintplex-labs/piper-tts-web@1.0.4/+esm";
+
+  window.PiperEngine = {
+    async listVoices(){
+      try{ return await piperTTS.voices(); } catch(e){ console.warn('Piper voices() failed:', e); return null; }
+    },
+    async storedVoices(){
+      try{ return await piperTTS.stored(); } catch(e){ return []; }
+    },
+    async ensureVoice(voiceId, onProgress){
+      await piperTTS.download(voiceId, onProgress);
+    },
+    async generateBlob(text, voiceId){
+      return await piperTTS.predict({ text, voiceId });
+    }
+  };
+</script>
+
 <script>
 pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
@@ -628,9 +664,11 @@ let curSentence = 0;
 let isPlaying = false;
 let bookKey = null;    // for localStorage progress
 let currentAudioEl = null;   // <audio> element used for kokoro playback
-const kokoroCache = new Map(); // "chapter-sentence" -> Promise<Blob>
+const neuralAudioCache = new Map(); // "chapter-sentence" -> Promise<Blob>
 let playToken = 0;            // increments whenever playback is stopped, to cancel stale async work
 let filterEnabled = true;
+let engine = 'system'; // 'system' (device's built-in voices) or 'kokoro' (downloaded neural voice)
+let systemVoices = [];
 let customBadWords = [];
 
 const el = id => document.getElementById(id);
@@ -659,12 +697,15 @@ el('tocModalClose').addEventListener('click', () => closeModal(el('tocModal')));
 
 el('settingsBtn').addEventListener('click', () => {
   openModal(el('settingsModal'));
-  if(!window.KokoroEngine.isLoaded() && !el('voiceSelect').options.length){
+  if(engine === 'kokoro' && !window.KokoroEngine.isLoaded()){
     const sel = el('voiceSelect');
+    sel.innerHTML = '';
     const placeholder = document.createElement('option');
     placeholder.textContent = 'Loading voices…';
     sel.appendChild(placeholder);
     ensureKokoroReady(); // populates voiceSelect itself once the model finishes loading
+  } else {
+    refreshVoiceSelect();
   }
 });
 el('settingsModalClose').addEventListener('click', () => closeModal(el('settingsModal')));
@@ -676,13 +717,13 @@ el('filterWords').value = customBadWords.join(', ');
 el('filterToggle').addEventListener('change', () => {
   filterEnabled = el('filterToggle').checked;
   saveFilterSettings();
-  kokoroCache.clear();
+  neuralAudioCache.clear();
   if(chapters.length) renderReadingWindow();
 });
 el('filterWords').addEventListener('input', () => {
   customBadWords = el('filterWords').value.split(',').map(w => w.trim()).filter(Boolean);
   saveFilterSettings();
-  kokoroCache.clear();
+  neuralAudioCache.clear();
   if(chapters.length) renderReadingWindow();
 });
 
@@ -712,6 +753,49 @@ el('darkModeToggle').addEventListener('change', () => {
   darkMode = el('darkModeToggle').checked;
   document.body.classList.toggle('dark', darkMode);
   try{ localStorage.setItem('lamplight:darkMode', darkMode ? '1' : '0'); } catch(e){ /* ignore */ }
+});
+
+// ---------------- Voice engine (system voice vs. Kokoro) ----------------
+try{
+  const savedEngine = localStorage.getItem('lamplight:engine');
+  if(savedEngine === 'kokoro' || savedEngine === 'system' || savedEngine === 'piper') engine = savedEngine;
+} catch(e){ /* ignore */ }
+el('engineSelect').value = engine;
+populateSystemVoiceSelect(); // safe default fill even if engine is 'kokoro' and not yet loaded
+
+// iOS Safari sometimes returns an incomplete voice list on the very first call, and
+// doesn't always fire onvoiceschanged reliably when a new voice becomes available —
+// so retry a few times shortly after load, and offer a manual refresh too.
+[300, 800, 1500, 3000].forEach(delay => {
+  setTimeout(() => {
+    if(engine === 'system' && el('voiceSelect').options.length <= 1) populateSystemVoiceSelect();
+  }, delay);
+});
+el('refreshVoicesBtn').addEventListener('click', () => {
+  if(engine === 'system'){
+    populateSystemVoiceSelect();
+  } else {
+    refreshVoiceSelect();
+  }
+});
+
+el('engineSelect').addEventListener('change', () => {
+  stopPlayback();
+  isPlaying = false;
+  updatePlayButton();
+  engine = el('engineSelect').value;
+  try{ localStorage.setItem('lamplight:engine', engine); } catch(e){ /* ignore */ }
+  neuralAudioCache.clear();
+  if(engine === 'kokoro' && !window.KokoroEngine.isLoaded()){
+    const sel = el('voiceSelect');
+    sel.innerHTML = '';
+    const placeholder = document.createElement('option');
+    placeholder.textContent = 'Loading voices…';
+    sel.appendChild(placeholder);
+    ensureKokoroReady();
+  } else {
+    refreshVoiceSelect();
+  }
 });
 
 // ---------------- Media Session: lock-screen controls + background playback ----------------
@@ -752,7 +836,7 @@ el('newBookBtn').addEventListener('click', () => {
   el('headerTag').classList.remove('hidden');
   chapters = [];
   chapterList.innerHTML = '';
-  kokoroCache.clear();
+  neuralAudioCache.clear();
 });
 
 // ---------------- Remembering the last opened book (IndexedDB) ----------------
@@ -806,7 +890,7 @@ async function loadLastBook(){
 
 async function handleFile(file, opts){
   opts = opts || {};
-  kokoroCache.clear();
+  neuralAudioCache.clear();
   loadStatus.textContent = opts.isAutoOpen ? ('Reopening ' + file.name + ' …') : ('Reading ' + file.name + ' …');
   try{
     const name = file.name.toLowerCase();
@@ -1228,6 +1312,7 @@ function updateProgressBar(){
 // ---------------- Speech: shared controls ----------------
 function stopPlayback(){
   playToken++; // invalidates any in-flight kokoro generation/playback continuations
+  if(typeof speechSynthesis !== 'undefined') speechSynthesis.cancel();
   if(currentAudioEl){
     currentAudioEl.onended = null;
     currentAudioEl.pause();
@@ -1243,8 +1328,123 @@ function friendlyVoiceName(id){
   return `${name} — ${region} ${gender}`.trim();
 }
 
-// Known standard voice ids for onnx-community/Kokoro-82M-v1.0-ONNX, used only if the
-// library's own list_voices() call comes back empty for some reason.
+// ---------------- System voice (the device's own built-in TTS) ----------------
+function populateSystemVoiceSelect(){
+  systemVoices = (typeof speechSynthesis !== 'undefined') ? speechSynthesis.getVoices() : [];
+  const sel = el('voiceSelect');
+  sel.innerHTML = '';
+  if(!systemVoices.length){
+    // Voices sometimes aren't ready yet on first load — they'll arrive via
+    // onvoiceschanged below and this gets called again.
+    const opt = document.createElement('option');
+    opt.textContent = 'Loading voices…';
+    sel.appendChild(opt);
+    return;
+  }
+  systemVoices.forEach((v, i) => {
+    const opt = document.createElement('option');
+    opt.value = String(i);
+    opt.textContent = v.name + (v.lang ? ' (' + v.lang + ')' : '');
+    sel.appendChild(opt);
+  });
+  let savedName = null;
+  try{ savedName = localStorage.getItem('lamplight:systemVoiceName'); } catch(e){ /* ignore */ }
+  let idx = savedName ? systemVoices.findIndex(v => v.name === savedName) : -1;
+  if(idx < 0){
+    idx = systemVoices.findIndex(v => v.lang && v.lang.startsWith('en') && /enhanced|premium|neural/i.test(v.name));
+  }
+  if(idx >= 0) sel.value = String(idx);
+}
+if(typeof speechSynthesis !== 'undefined'){
+  speechSynthesis.onvoiceschanged = () => { if(engine === 'system') populateSystemVoiceSelect(); };
+}
+
+// Fills the shared #voiceSelect with whichever engine is currently active. Kokoro's
+// list requires the model to be loaded first, so callers that need that to happen
+// (Settings opening, pressing Play) trigger it themselves — this just renders.
+function refreshVoiceSelect(){
+  if(engine === 'system'){
+    populateSystemVoiceSelect();
+  } else if(engine === 'piper'){
+    populatePiperVoiceSelect();
+  } else if(window.KokoroEngine.isLoaded()){
+    populateKokoroVoiceSelect();
+  }
+}
+
+// ---------------- Piper voice (a lighter alternative neural engine to Kokoro) ----------------
+function friendlyPiperVoiceName(id){
+  // ids look like "en_US-hfc_female-medium" -> lang_region - name - quality
+  const parts = id.split('-');
+  const langMap = { en_US: 'English (US)', en_GB: 'English (UK)', en_AU: 'English (AU)' };
+  const lang = langMap[parts[0]] || parts[0] || '';
+  const name = (parts[1] || id).split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+  const quality = parts[2] || '';
+  return `${name} — ${lang}${quality ? ', ' + quality : ''}`.trim();
+}
+
+// Known, real Piper voice IDs from the standard rhasspy/piper-voices catalog — used
+// only if the library's own voices.json manifest fetch fails (which happens if its
+// hardcoded Hugging Face path is unreachable from the browser for any reason).
+// Downloading a specific voice is a separate, more specific fetch than that manifest,
+// so these should still work even when the manifest lookup itself doesn't.
+const FALLBACK_PIPER_VOICES = ['en_US-hfc_female-medium','en_US-hfc_male-medium','en_US-libritts_r-medium','en_US-lessac-medium','en_US-amy-medium','en_US-ryan-medium','en_GB-alan-medium','en_GB-alba-medium','en_GB-jenny_dioco-medium'];
+
+async function populatePiperVoiceSelect(){
+  const sel = el('voiceSelect');
+  sel.innerHTML = '';
+  const placeholder = document.createElement('option');
+  placeholder.textContent = 'Loading voices…';
+  sel.appendChild(placeholder);
+
+  const voices = await window.PiperEngine.listVoices();
+  if(engine !== 'piper') return; // engine was switched again while this was in flight
+
+  sel.innerHTML = '';
+  let ids = (voices && typeof voices === 'object') ? Object.keys(voices).filter(id => id.startsWith('en_')).sort() : [];
+  if(!ids.length){
+    console.warn('Piper voices() returned nothing — falling back to a known voice list.');
+    ids = FALLBACK_PIPER_VOICES;
+  }
+  ids.forEach(id => {
+    const opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = friendlyPiperVoiceName(id);
+    sel.appendChild(opt);
+  });
+  let saved = null;
+  try{ saved = localStorage.getItem('lamplight:piperVoice'); } catch(e){ /* ignore */ }
+  if(saved && ids.indexOf(saved) >= 0){
+    sel.value = saved;
+  } else if(ids.indexOf('en_US-hfc_female-medium') >= 0){
+    sel.value = 'en_US-hfc_female-medium';
+  }
+}
+
+// Piper downloads each voice separately (unlike Kokoro's one bundle), so this
+// checks whether the specific selected voice is already cached before fetching it.
+async function ensurePiperVoiceReady(voiceId){
+  try{
+    const stored = await window.PiperEngine.storedVoices();
+    if(Array.isArray(stored) && stored.includes(voiceId)) return true;
+  } catch(e){ /* fall through and just try to download it */ }
+  const status = el('engineStatus');
+  status.textContent = 'Downloading voice…';
+  try{
+    await window.PiperEngine.ensureVoice(voiceId, progress => {
+      if(progress && progress.total){
+        status.textContent = 'Downloading voice… ' + Math.round(progress.loaded * 100 / progress.total) + '%';
+      }
+    });
+    status.textContent = '';
+    return true;
+  } catch(err){
+    console.error(err);
+    status.textContent = 'Could not download that voice (needs internet the first time).';
+    return false;
+  }
+}
+
 const FALLBACK_KOKORO_VOICES = ['af_heart','af_bella','af_nicole','af_sarah','af_sky','am_adam','am_michael','am_fenrir','bf_emma','bf_isabella','bm_george','bm_lewis'];
 
 function populateKokoroVoiceSelect(){
@@ -1309,7 +1509,7 @@ function withTimeout(promise, ms, label){
 // Fetch (and cache) the audio blob for a given sentence, generating it if needed.
 function getKokoroAudio(chapterIdx, sentenceIdx){
   const key = chapterIdx + '-' + sentenceIdx;
-  if(!kokoroCache.has(key)){
+  if(!neuralAudioCache.has(key)){
     const ch = chapters[chapterIdx];
     if(!ch || !ch.sentences[sentenceIdx]) return null;
     const voice = el('voiceSelect').value || 'af_heart';
@@ -1318,10 +1518,27 @@ function getKokoroAudio(chapterIdx, sentenceIdx){
     console.time('kokoro-generate:' + key);
     const promise = withTimeout(window.KokoroEngine.generateBlob(text, voice, speed), 60000, 'Voice generation')
       .finally(() => console.timeEnd('kokoro-generate:' + key));
-    promise.catch(() => { kokoroCache.delete(key); }); // don't cache a permanent failure — allow retry next time
-    kokoroCache.set(key, promise);
+    promise.catch(() => { neuralAudioCache.delete(key); }); // don't cache a permanent failure — allow retry next time
+    neuralAudioCache.set(key, promise);
   }
-  return kokoroCache.get(key);
+  return neuralAudioCache.get(key);
+}
+
+function getPiperAudio(chapterIdx, sentenceIdx){
+  const key = chapterIdx + '-' + sentenceIdx;
+  if(!neuralAudioCache.has(key)){
+    const ch = chapters[chapterIdx];
+    if(!ch || !ch.sentences[sentenceIdx]) return null;
+    const voiceId = el('voiceSelect').value;
+    if(!voiceId) return null;
+    const text = speechFilteredText(ch.sentences[sentenceIdx]) || ' ';
+    console.time('piper-generate:' + key);
+    const promise = withTimeout(window.PiperEngine.generateBlob(text, voiceId), 60000, 'Voice generation')
+      .finally(() => console.timeEnd('piper-generate:' + key));
+    promise.catch(() => { neuralAudioCache.delete(key); });
+    neuralAudioCache.set(key, promise);
+  }
+  return neuralAudioCache.get(key);
 }
 
 function speakCurrent(){
@@ -1339,7 +1556,37 @@ function speakCurrent(){
     }
     return;
   }
-  speakCurrentKokoro();
+  if(engine === 'kokoro') speakCurrentKokoro();
+  else if(engine === 'piper') speakCurrentPiper();
+  else speakCurrentSystem();
+}
+
+function speakCurrentSystem(){
+  const myToken = playToken;
+  const ch = chapters[curChapter];
+  renderReadingWindow();
+  updateProgressBar();
+  if(typeof speechSynthesis === 'undefined'){
+    el('engineStatus').textContent = 'System voice is not available in this browser.';
+    isPlaying = false; updatePlayButton();
+    return;
+  }
+  const utter = new SpeechSynthesisUtterance(speechFilteredText(ch.sentences[curSentence]) || ' ');
+  const idx = el('voiceSelect').value;
+  if(systemVoices[idx]) utter.voice = systemVoices[idx];
+  utter.rate = parseFloat(el('rateSlider').value);
+  utter.onend = () => {
+    if(myToken !== playToken || !isPlaying) return;
+    curSentence++;
+    saveProgress();
+    speakCurrent();
+  };
+  utter.onerror = (e) => {
+    if(myToken !== playToken) return;
+    console.error('Speech synthesis error:', e.error);
+    if(isPlaying){ curSentence++; saveProgress(); speakCurrent(); }
+  };
+  speechSynthesis.speak(utter);
 }
 
 async function speakCurrentKokoro(){
@@ -1398,6 +1645,65 @@ async function speakCurrentKokoro(){
   lookahead.forEach(([ci, si]) => getKokoroAudio(ci, si));
 }
 
+async function speakCurrentPiper(){
+  const myToken = playToken;
+  const chapterIdx = curChapter, sentenceIdx = curSentence;
+  renderReadingWindow();
+  updateProgressBar();
+
+  const voiceId = el('voiceSelect').value;
+  if(!voiceId){
+    el('engineStatus').textContent = 'No Piper voice selected yet.';
+    isPlaying = false; updatePlayButton();
+    return;
+  }
+
+  const ready = await ensurePiperVoiceReady(voiceId);
+  if(myToken !== playToken) return;
+  if(!ready){ isPlaying = false; updatePlayButton(); return; }
+
+  el('engineStatus').textContent = 'Generating…';
+  let blob;
+  try{
+    blob = await getPiperAudio(chapterIdx, sentenceIdx);
+  } catch(err){
+    console.error(err);
+    const detail = err && err.message ? err.message : 'unknown error';
+    el('engineStatus').textContent = 'Voice generation failed (' + detail + ') — skipping.';
+    if(myToken !== playToken) return;
+    if(isPlaying){ curSentence++; saveProgress(); speakCurrent(); }
+    return;
+  }
+  if(myToken !== playToken || !blob) return;
+  el('engineStatus').textContent = '';
+
+  const url = URL.createObjectURL(blob);
+  const audioEl = el('ttsAudio');
+  currentAudioEl = audioEl;
+  if(audioEl.dataset.blobUrl) URL.revokeObjectURL(audioEl.dataset.blobUrl);
+  audioEl.src = url;
+  audioEl.dataset.blobUrl = url;
+  audioEl.onended = () => {
+    if(myToken !== playToken || !isPlaying) return;
+    curSentence++;
+    saveProgress();
+    speakCurrent();
+  };
+  audioEl.play().catch(err => console.error(err));
+
+  const lookahead = [];
+  let c = chapterIdx, s = sentenceIdx;
+  for(let n = 0; n < 2; n++){
+    s++;
+    if(s >= chapters[c].sentences.length){
+      c++; s = 0;
+      if(c >= chapters.length || !chapters[c].sentences.length) break;
+    }
+    lookahead.push([c, s]);
+  }
+  lookahead.forEach(([ci, si]) => getPiperAudio(ci, si));
+}
+
 const PLAY_ICON = '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><polygon points="8,5 8,19 19,12"/></svg>';
 const PAUSE_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4.2" height="14" rx="1"/><rect x="13.8" y="5" width="4.2" height="14" rx="1"/></svg>';
 
@@ -1435,11 +1741,20 @@ el('nextBtn').addEventListener('click', () => {
 });
 el('rateSlider').addEventListener('input', () => {
   el('rateLabel').textContent = parseFloat(el('rateSlider').value).toFixed(2) + '×';
-  kokoroCache.clear();
+  neuralAudioCache.clear();
 });
 el('voiceSelect').addEventListener('change', () => {
-  kokoroCache.clear();
-  try{ localStorage.setItem('lamplight:voice', el('voiceSelect').value); } catch(e){ /* ignore */ }
+  neuralAudioCache.clear();
+  try{
+    if(engine === 'kokoro'){
+      localStorage.setItem('lamplight:voice', el('voiceSelect').value);
+    } else if(engine === 'piper'){
+      localStorage.setItem('lamplight:piperVoice', el('voiceSelect').value);
+    } else {
+      const v = systemVoices[el('voiceSelect').value];
+      if(v) localStorage.setItem('lamplight:systemVoiceName', v.name);
+    }
+  } catch(e){ /* ignore */ }
 });
 el('lampProgress').addEventListener('click', e => {
   const rect = e.currentTarget.getBoundingClientRect();
