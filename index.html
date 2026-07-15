@@ -1588,7 +1588,6 @@ function getPiperAudio(chapterIdx, sentenceIdx){
     const text = speechFilteredText(ch.sentences[sentenceIdx]) || ' ';
     console.time('piper-generate:' + key);
     const promise = withTimeout(window.PiperEngine.generateBlob(text, voiceId), 60000, 'Voice generation')
-      .then(blob => trimTrailingSilence(blob))
       .finally(() => console.timeEnd('piper-generate:' + key));
     promise.catch(() => { neuralAudioCache.delete(key); });
     neuralAudioCache.set(key, promise);
@@ -1738,12 +1737,30 @@ async function speakCurrentPiper(){
   if(audioEl.dataset.blobUrl) URL.revokeObjectURL(audioEl.dataset.blobUrl);
   audioEl.src = url;
   audioEl.dataset.blobUrl = url;
-  audioEl.onended = () => {
+
+  // Piper bakes some silence into the end of every clip. Rather than analyzing and
+  // re-encoding the audio (which misfired badly on real output), just stop playback
+  // a small fixed amount early — capped so a short clip never loses more than 30%
+  // of itself, so this can't misfire into cutting off real speech.
+  const PIPER_TAIL_TRIM_SEC = 0.25;
+  let advanced = false;
+  const advanceToNext = () => {
+    if(advanced) return;
+    advanced = true;
+    audioEl.removeEventListener('timeupdate', onTimeUpdate);
     if(myToken !== playToken || !isPlaying) return;
     curSentence++;
     saveProgress();
     speakCurrent();
   };
+  function onTimeUpdate(){
+    const d = audioEl.duration;
+    if(!isFinite(d) || d <= 0) return;
+    const cutoff = Math.max(d * 0.7, d - PIPER_TAIL_TRIM_SEC);
+    if(audioEl.currentTime >= cutoff) advanceToNext();
+  }
+  audioEl.addEventListener('timeupdate', onTimeUpdate);
+  audioEl.onended = advanceToNext; // fallback in case timeupdate/duration never fires
   audioEl.play().catch(err => console.error(err));
 
   const lookahead = [];
