@@ -214,7 +214,8 @@
   }
 
   /* Reading window: prev / current / next paragraph */
-  .para-block{ margin-bottom: 30px; }
+  .para-block{ margin-bottom: 30px; opacity: 0.45; transition: opacity .2s ease; }
+  .para-block.active-para{ opacity: 1; }
 
   .hidden{ display:none !important; }
 
@@ -733,7 +734,7 @@ document.addEventListener('keydown', e => {
 el('tocBtn').addEventListener('click', () => openModal(el('tocModal')));
 el('tocModalClose').addEventListener('click', () => closeModal(el('tocModal')));
 
-el('settingsBtn').addEventListener('click', () => {
+el('settingsBtn').addEventListener('click', async () => {
   openModal(el('settingsModal'));
   if(engine === 'kokoro' && !window.KokoroEngine.isLoaded()){
     const sel = el('voiceSelect');
@@ -745,7 +746,13 @@ el('settingsBtn').addEventListener('click', () => {
   } else if(!el('voiceSelect').options.length){
     // Only (re)build the list if it's empty — reopening Settings shouldn't reset
     // a voice the person already picked.
-    refreshVoiceSelect();
+    if(engine === 'piper'){
+      await populatePiperVoiceSelect();
+      const voiceId = el('voiceSelect').value;
+      if(voiceId) ensurePiperVoiceReady(voiceId);
+    } else {
+      refreshVoiceSelect();
+    }
   }
 });
 el('settingsModalClose').addEventListener('click', () => closeModal(el('settingsModal')));
@@ -824,6 +831,34 @@ try{
 el('engineSelect').value = engine;
 populateSystemVoiceSelect(); // safe default fill even if engine is 'kokoro' and not yet loaded
 
+// The Kokoro/Piper engines live in <script type="module"> blocks that fetch a
+// library from a CDN — they may not be attached to window yet at this exact point
+// in page load, so wait for whichever one we need rather than assuming it's ready.
+function waitForGlobal(name, timeoutMs){
+  return new Promise(resolve => {
+    const start = Date.now();
+    (function check(){
+      if(window[name]){ resolve(window[name]); return; }
+      if(Date.now() - start > (timeoutMs || 8000)){ resolve(null); return; }
+      setTimeout(check, 100);
+    })();
+  });
+}
+
+// Prep whatever downloadable engine was restored from last time, right away — so
+// by the time a book is open and Play is pressed, nothing has to download then.
+if(engine === 'kokoro'){
+  waitForGlobal('KokoroEngine').then(ke => { if(ke) ensureKokoroReady(); });
+} else if(engine === 'piper'){
+  waitForGlobal('PiperEngine').then(pe => {
+    if(!pe) return;
+    populatePiperVoiceSelect().then(() => {
+      const voiceId = el('voiceSelect').value;
+      if(voiceId) ensurePiperVoiceReady(voiceId);
+    });
+  });
+}
+
 // iOS Safari sometimes returns an incomplete voice list on the very first call, and
 // doesn't always fire onvoiceschanged reliably when a new voice becomes available —
 // so retry a few times shortly after load, and offer a manual refresh too.
@@ -832,15 +867,19 @@ populateSystemVoiceSelect(); // safe default fill even if engine is 'kokoro' and
     if(engine === 'system' && el('voiceSelect').options.length <= 1) populateSystemVoiceSelect();
   }, delay);
 });
-el('refreshVoicesBtn').addEventListener('click', () => {
+el('refreshVoicesBtn').addEventListener('click', async () => {
   if(engine === 'system'){
     populateSystemVoiceSelect();
+  } else if(engine === 'piper'){
+    await populatePiperVoiceSelect();
+    const voiceId = el('voiceSelect').value;
+    if(voiceId) ensurePiperVoiceReady(voiceId); // confirms the shown voice is actually the one that will play
   } else {
     refreshVoiceSelect();
   }
 });
 
-el('engineSelect').addEventListener('change', () => {
+el('engineSelect').addEventListener('change', async () => {
   stopPlayback();
   isPlaying = false;
   updatePlayButton();
@@ -854,6 +893,10 @@ el('engineSelect').addEventListener('change', () => {
     placeholder.textContent = 'Loading voices…';
     sel.appendChild(placeholder);
     ensureKokoroReady();
+  } else if(engine === 'piper'){
+    await populatePiperVoiceSelect();
+    const voiceId = el('voiceSelect').value;
+    if(voiceId) ensurePiperVoiceReady(voiceId); // download now, not when Play is pressed
   } else {
     refreshVoiceSelect();
   }
@@ -919,10 +962,22 @@ function openLibraryDB(){
 async function saveBookToLibrary(file, buf){
   try{
     const db = await openLibraryDB();
-    const id = file.name + '::' + file.size;
+    const id = file.name.trim().toLowerCase(); // same filename = same book, regardless of minor byte differences
     await new Promise((resolve, reject) => {
       const tx = db.transaction(LAST_BOOK_STORE, 'readwrite');
-      tx.objectStore(LAST_BOOK_STORE).put({ id, name: file.name, type: file.type, data: buf, savedAt: Date.now() });
+      const store = tx.objectStore(LAST_BOOK_STORE);
+      const getReq = store.get(id);
+      getReq.onsuccess = () => {
+        const existing = getReq.result;
+        store.put({
+          id,
+          name: file.name,
+          type: file.type,
+          data: buf,
+          savedAt: Date.now(),
+          displayName: existing ? existing.displayName : undefined // keep any custom name across re-opens
+        });
+      };
       tx.oncomplete = resolve;
       tx.onerror = () => reject(tx.error);
     });
@@ -966,6 +1021,32 @@ async function deleteBookFromLibrary(id){
   }
 }
 
+async function renameBookInLibrary(id, displayName){
+  try{
+    const db = await openLibraryDB();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(LAST_BOOK_STORE, 'readwrite');
+      const store = tx.objectStore(LAST_BOOK_STORE);
+      const getReq = store.get(id);
+      getReq.onsuccess = () => {
+        const rec = getReq.result;
+        if(!rec) return;
+        rec.displayName = displayName;
+        store.put(rec);
+      };
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  } catch(err){
+    console.warn('Could not rename book:', err);
+  }
+}
+
+function libraryBookTitle(rec){
+  return rec.displayName || rec.name.replace(/\.(epub|pdf)$/i, '');
+}
+
 // Renders the tappable list of previously-opened books on the upload/library screen.
 // Pass a pre-fetched array to avoid a redundant DB read; otherwise it fetches its own.
 async function renderLibraryList(books){
@@ -980,8 +1061,26 @@ async function renderLibraryList(books){
     row.className = 'toc-row';
 
     const label = document.createElement('span');
-    label.textContent = rec.name.replace(/\.(epub|pdf)$/i, '');
+    label.textContent = libraryBookTitle(rec);
+    label.style.overflow = 'hidden';
+    label.style.textOverflow = 'ellipsis';
+    label.style.whiteSpace = 'nowrap';
     row.appendChild(label);
+
+    const btnGroup = document.createElement('div');
+    btnGroup.style.display = 'flex';
+    btnGroup.style.gap = '8px';
+    btnGroup.style.flexShrink = '0';
+
+    const renameBtn = document.createElement('button');
+    renameBtn.className = 'preview-btn';
+    renameBtn.setAttribute('aria-label', 'Rename book');
+    renameBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+    renameBtn.addEventListener('click', ev => {
+      ev.stopPropagation();
+      startLibraryRename(rec, label, row);
+    });
+    btnGroup.appendChild(renameBtn);
 
     const delBtn = document.createElement('button');
     delBtn.className = 'modal-close';
@@ -992,14 +1091,42 @@ async function renderLibraryList(books){
       await deleteBookFromLibrary(rec.id);
       renderLibraryList();
     });
-    row.appendChild(delBtn);
+    btnGroup.appendChild(delBtn);
+    row.appendChild(btnGroup);
 
     row.addEventListener('click', () => {
       const file = new File([rec.data], rec.name, { type: rec.type || '' });
-      handleFile(file, { isAutoOpen: false });
+      handleFile(file, { isAutoOpen: false, displayName: rec.displayName || null });
     });
     container.appendChild(row);
   });
+}
+
+function startLibraryRename(rec, labelEl, rowEl){
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'pron-input';
+  input.style.flex = '1';
+  input.value = libraryBookTitle(rec);
+  input.addEventListener('click', ev => ev.stopPropagation());
+
+  let settled = false;
+  const confirmRename = async () => {
+    if(settled) return;
+    settled = true;
+    const newName = input.value.trim();
+    if(newName) await renameBookInLibrary(rec.id, newName);
+    renderLibraryList();
+  };
+  input.addEventListener('keydown', ev => {
+    if(ev.key === 'Enter'){ ev.preventDefault(); confirmRename(); }
+    else if(ev.key === 'Escape'){ ev.preventDefault(); settled = true; renderLibraryList(); }
+  });
+  input.addEventListener('blur', confirmRename);
+
+  labelEl.replaceWith(input);
+  input.focus();
+  input.select();
 }
 
 async function handleFile(file, opts){
@@ -1021,7 +1148,7 @@ async function handleFile(file, opts){
     if(chapters.length === 0){ loadStatus.textContent = 'Could not find readable text in that file.'; return; }
 
     bookKey = 'lamplight:' + title + ':' + file.size;
-    el('bookTitle').textContent = title;
+    el('bookTitle').textContent = opts.displayName || title;
     el('bookSub').textContent = chapters.length + (chapters.length===1?' chapter':' chapters') + ' · ' + file.name;
 
     renderChapterList();
@@ -1500,9 +1627,10 @@ function renderChapterText(){
   proseText.innerHTML = '';
   const ch = chapters[curChapter];
   if(!ch) return;
-  ch.paragraphs.forEach(para => {
+  ch.paragraphs.forEach((para, pIdx) => {
     const wrap = document.createElement('div');
     wrap.className = 'para-block';
+    wrap.dataset.para = pIdx;
     para.sentenceIndices.forEach(si => {
       const span = document.createElement('span');
       span.className = 's';
@@ -1537,6 +1665,12 @@ function highlightCurrent(){
   proseText.querySelectorAll('.s').forEach(s => s.classList.remove('current'));
   const cur = proseText.querySelector('.s[data-i="'+curSentence+'"]');
   if(cur){ cur.classList.add('current'); cur.scrollIntoView({block:'center', behavior:'smooth'}); }
+
+  const ch = chapters[curChapter];
+  const curPara = ch ? (ch.sentenceParagraph[curSentence] ?? -1) : -1;
+  proseText.querySelectorAll('.para-block').forEach(block => {
+    block.classList.toggle('active-para', Number(block.dataset.para) === curPara);
+  });
 }
 
 function updateProgressBar(){
@@ -2060,6 +2194,7 @@ el('voiceSelect').addEventListener('change', () => {
       localStorage.setItem('lamplight:voice', el('voiceSelect').value);
     } else if(engine === 'piper'){
       localStorage.setItem('lamplight:piperVoice', el('voiceSelect').value);
+      ensurePiperVoiceReady(el('voiceSelect').value); // download now, not when Play is pressed
     } else {
       const v = systemVoices[el('voiceSelect').value];
       if(v) localStorage.setItem('lamplight:systemVoiceName', v.name);
@@ -2102,7 +2237,7 @@ window.addEventListener('beforeunload', () => stopPlayback());
   loadStatus.textContent = 'Reopening ' + record.name + ' …';
   try{
     const file = new File([record.data], record.name, { type: record.type || '' });
-    await handleFile(file, { isAutoOpen: true });
+    await handleFile(file, { isAutoOpen: true, displayName: record.displayName || null });
   } catch(err){
     console.warn('Auto-reopen failed:', err);
     loadStatus.textContent = '';
