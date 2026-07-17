@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Lamplight Reader — listen to your books</title>
+<link rel="apple-touch-icon" sizes="180x180" href="icon-180.png">
+<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
+<link rel="icon" type="image/png" sizes="32x32" href="icon-32.png">
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&display=swap');
 
@@ -211,16 +214,7 @@
   }
 
   /* Reading window: prev / current / next paragraph */
-  .para-block{ margin-bottom: 30px; transition: opacity .2s ease; }
-  .para-block.prev, .para-block.next{ opacity: 0.4; }
-  .para-block.current{ opacity: 1; }
-  .para-block.para-empty{
-    font-size: 12px;
-    font-weight:600;
-    letter-spacing: 0.4px;
-    color: var(--ink-soft);
-    opacity: 0.55;
-  }
+  .para-block{ margin-bottom: 30px; }
 
   .hidden{ display:none !important; }
 
@@ -454,6 +448,10 @@
     <div class="page">
 
       <div id="uploadView">
+        <div id="libraryListWrap" class="hidden" style="margin-bottom:24px;">
+          <h2 style="font-size:12px; font-weight:600; color:var(--ink-soft); margin:4px 4px 10px;">Your Library</h2>
+          <div class="settings-group" id="libraryList"></div>
+        </div>
         <div class="drop" id="dropZone">
           <svg class="drop-icon" width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
             <path d="M4 19.5V6a2 2 0 0 1 2-2h8.5L20 8.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2.5Z"/>
@@ -744,7 +742,9 @@ el('settingsBtn').addEventListener('click', () => {
     placeholder.textContent = 'Loading voices…';
     sel.appendChild(placeholder);
     ensureKokoroReady(); // populates voiceSelect itself once the model finishes loading
-  } else {
+  } else if(!el('voiceSelect').options.length){
+    // Only (re)build the list if it's empty — reopening Settings shouldn't reset
+    // a voice the person already picked.
     refreshVoiceSelect();
   }
 });
@@ -898,15 +898,14 @@ el('newBookBtn').addEventListener('click', () => {
   chapters = [];
   chapterList.innerHTML = '';
   neuralAudioCache.clear();
+  renderLibraryList();
 });
 
-// ---------------- Remembering the last opened book (IndexedDB) ----------------
-// Stores the raw file bytes locally (never uploaded anywhere) so the same book can
-// reopen automatically next visit. Overwrites the single stored entry each time a
-// book is opened, so only the most recent one is ever kept.
+// ---------------- Book library (IndexedDB) ----------------
+// Stores the raw bytes of every book that's been opened locally (never uploaded
+// anywhere), so any of them can reopen instantly without re-choosing the file.
 const LAST_BOOK_DB = 'lamplight-reader';
 const LAST_BOOK_STORE = 'files';
-const LAST_BOOK_KEY = 'lastBook';
 
 function openLibraryDB(){
   return new Promise((resolve, reject) => {
@@ -917,36 +916,90 @@ function openLibraryDB(){
   });
 }
 
-async function saveLastBook(file, buf){
+async function saveBookToLibrary(file, buf){
   try{
     const db = await openLibraryDB();
+    const id = file.name + '::' + file.size;
     await new Promise((resolve, reject) => {
       const tx = db.transaction(LAST_BOOK_STORE, 'readwrite');
-      tx.objectStore(LAST_BOOK_STORE).put({ id: LAST_BOOK_KEY, name: file.name, type: file.type, data: buf, savedAt: Date.now() });
+      tx.objectStore(LAST_BOOK_STORE).put({ id, name: file.name, type: file.type, data: buf, savedAt: Date.now() });
       tx.oncomplete = resolve;
       tx.onerror = () => reject(tx.error);
     });
     db.close();
   } catch(err){
-    console.warn('Could not save last book for auto-reopen:', err);
+    console.warn('Could not save book to library:', err);
   }
 }
 
-async function loadLastBook(){
+// Returns every stored book, most recently opened first.
+async function listLibraryBooks(){
   try{
     const db = await openLibraryDB();
-    const record = await new Promise((resolve, reject) => {
+    const records = await new Promise((resolve, reject) => {
       const tx = db.transaction(LAST_BOOK_STORE, 'readonly');
-      const req = tx.objectStore(LAST_BOOK_STORE).get(LAST_BOOK_KEY);
-      req.onsuccess = () => resolve(req.result || null);
+      const req = tx.objectStore(LAST_BOOK_STORE).getAll();
+      req.onsuccess = () => resolve(req.result || []);
       req.onerror = () => reject(req.error);
     });
     db.close();
-    return record;
+    records.sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+    return records;
   } catch(err){
-    console.warn('Could not read last book:', err);
-    return null;
+    console.warn('Could not list library:', err);
+    return [];
   }
+}
+
+async function deleteBookFromLibrary(id){
+  try{
+    const db = await openLibraryDB();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(LAST_BOOK_STORE, 'readwrite');
+      tx.objectStore(LAST_BOOK_STORE).delete(id);
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  } catch(err){
+    console.warn('Could not remove book from library:', err);
+  }
+}
+
+// Renders the tappable list of previously-opened books on the upload/library screen.
+// Pass a pre-fetched array to avoid a redundant DB read; otherwise it fetches its own.
+async function renderLibraryList(books){
+  if(!books) books = await listLibraryBooks();
+  const wrap = el('libraryListWrap');
+  const container = el('libraryList');
+  container.innerHTML = '';
+  if(!books.length){ wrap.classList.add('hidden'); return; }
+  wrap.classList.remove('hidden');
+  books.forEach(rec => {
+    const row = document.createElement('div');
+    row.className = 'toc-row';
+
+    const label = document.createElement('span');
+    label.textContent = rec.name.replace(/\.(epub|pdf)$/i, '');
+    row.appendChild(label);
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'modal-close';
+    delBtn.setAttribute('aria-label', 'Remove from library');
+    delBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>';
+    delBtn.addEventListener('click', async (ev) => {
+      ev.stopPropagation();
+      await deleteBookFromLibrary(rec.id);
+      renderLibraryList();
+    });
+    row.appendChild(delBtn);
+
+    row.addEventListener('click', () => {
+      const file = new File([rec.data], rec.name, { type: rec.type || '' });
+      handleFile(file, { isAutoOpen: false });
+    });
+    container.appendChild(row);
+  });
 }
 
 async function handleFile(file, opts){
@@ -988,7 +1041,7 @@ async function handleFile(file, opts){
       showToast('Resumed where you left off (chapter ' + (saved.chapter+1) + ').');
     }
 
-    saveLastBook(file, buf); // fire-and-forget — remembers this book for next visit
+    saveBookToLibrary(file, buf); // fire-and-forget — adds/updates this book in the library
   } catch(err){
     console.error(err);
     loadStatus.textContent = opts.isAutoOpen
@@ -1441,44 +1494,41 @@ function renderChapterList(){
   buildChapterListInto(el('tocModalList'));
 }
 
-function currentParagraphIndex(){
-  const ch = chapters[curChapter];
-  if(!ch) return 0;
-  return ch.sentenceParagraph[curSentence] ?? 0;
-}
+let renderedChapterIdx = -1; // tracks which chapter's text is currently built in the DOM
 
-function makeParaBlock(pIdx, variant){
-  const wrap = document.createElement('div');
-  const ch = chapters[curChapter];
-  if(pIdx < 0 || !ch || pIdx >= ch.paragraphs.length){
-    wrap.className = 'para-block para-empty ' + variant;
-    wrap.textContent = variant === 'prev' ? '— start of chapter —' : '— end of chapter —';
-    return wrap;
-  }
-  wrap.className = 'para-block ' + variant;
-  const para = ch.paragraphs[pIdx];
-  para.sentenceIndices.forEach(si => {
-    const span = document.createElement('span');
-    span.className = 's';
-    span.textContent = displayFilteredText(ch.sentences[si]) + ' ';
-    span.dataset.i = si;
-    span.addEventListener('click', () => {
-      stopPlayback();
-      curSentence = si;
-      if(isPlaying) speakCurrent(); else { renderReadingWindow(); updateProgressBar(); }
-      saveProgress();
-    });
-    wrap.appendChild(span);
-  });
-  return wrap;
-}
-
-function renderReadingWindow(){
+function renderChapterText(){
   proseText.innerHTML = '';
-  const paraIdx = currentParagraphIndex();
-  proseText.appendChild(makeParaBlock(paraIdx - 1, 'prev'));
-  proseText.appendChild(makeParaBlock(paraIdx, 'current'));
-  proseText.appendChild(makeParaBlock(paraIdx + 1, 'next'));
+  const ch = chapters[curChapter];
+  if(!ch) return;
+  ch.paragraphs.forEach(para => {
+    const wrap = document.createElement('div');
+    wrap.className = 'para-block';
+    para.sentenceIndices.forEach(si => {
+      const span = document.createElement('span');
+      span.className = 's';
+      span.textContent = displayFilteredText(ch.sentences[si]) + ' ';
+      span.dataset.i = si;
+      span.addEventListener('click', () => {
+        stopPlayback();
+        curSentence = si;
+        if(isPlaying) speakCurrent(); else { highlightCurrent(); updateProgressBar(); }
+        saveProgress();
+      });
+      wrap.appendChild(span);
+    });
+    proseText.appendChild(wrap);
+  });
+  renderedChapterIdx = curChapter;
+}
+
+// Shows the whole chapter, scrollable, rather than just a few paragraphs — only
+// rebuilds the DOM when the chapter actually changed (cheap check), so playing
+// through a long chapter sentence-by-sentence doesn't rebuild the whole page each
+// time or fight the person's own manual scrolling.
+function renderReadingWindow(){
+  if(renderedChapterIdx !== curChapter){
+    renderChapterText();
+  }
   highlightCurrent();
   updateMediaSessionMetadata();
 }
@@ -1627,7 +1677,8 @@ async function ensurePiperVoiceReady(voiceId){
     return true;
   } catch(err){
     console.error(err);
-    status.textContent = 'Could not download that voice (needs internet the first time).';
+    const detail = err && err.message ? err.message : String(err);
+    status.textContent = 'Could not download that voice (' + detail + ').';
     return false;
   }
 }
@@ -2042,9 +2093,11 @@ function loadProgress(){
 
 window.addEventListener('beforeunload', () => stopPlayback());
 
-// ---------------- Auto-reopen the last book on load ----------------
+// ---------------- Auto-reopen the most recent book on load ----------------
 (async function autoOpenLastBook(){
-  const record = await loadLastBook();
+  const books = await listLibraryBooks();
+  renderLibraryList(books); // ready in case auto-open fails or the person hits Library later
+  const record = books[0];
   if(!record || !record.data || !record.data.byteLength) return;
   loadStatus.textContent = 'Reopening ' + record.name + ' …';
   try{
