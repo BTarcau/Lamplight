@@ -528,6 +528,7 @@
           <option value="piper">Piper AI voice (offline)</option>
         </select>
       </div>
+      <p class="footnote" id="settingsEngineStatus" style="padding:0 16px 12px; min-height:16px;"></p>
       <div class="settings-row">
         <span class="settings-row-label">Voice</span>
         <div class="speed-control">
@@ -1551,7 +1552,7 @@ async function speakPreviewText(text, btn){
       if(!voiceId) return;
       const ready = await ensurePiperVoiceReady(voiceId);
       if(!ready) return;
-      const blob = await window.PiperEngine.generateBlob(text, voiceId);
+      const blob = await runPiperSerial(() => withTimeout(window.PiperEngine.generateBlob(text, voiceId), 60000, 'Voice generation'));
       playPreviewBlob(blob);
     } else if(typeof speechSynthesis !== 'undefined'){
       speechSynthesis.cancel();
@@ -1794,27 +1795,48 @@ async function populatePiperVoiceSelect(){
 
 // Piper downloads each voice separately (unlike Kokoro's one bundle), so this
 // checks whether the specific selected voice is already cached before fetching it.
+// Piper's underlying engine isn't safe for overlapping calls — asking it to download
+// a voice while also generating audio (easy to trigger now that downloads can start
+// from several places: switching engine, switching voice, opening Settings, the
+// refresh button) can leave it hung rather than erroring cleanly. Route every actual
+// call to it through one serial queue so it only ever does one thing at a time.
+let piperQueue = Promise.resolve();
+function runPiperSerial(fn){
+  const result = piperQueue.then(fn, fn);
+  piperQueue = result.then(() => {}, () => {}); // keep the chain alive even after a failure
+  return result;
+}
+
+const piperReadyPromises = new Map(); // voiceId -> in-flight readiness Promise, to dedupe repeat calls
+
 async function ensurePiperVoiceReady(voiceId){
-  try{
-    const stored = await window.PiperEngine.storedVoices();
-    if(Array.isArray(stored) && stored.includes(voiceId)) return true;
-  } catch(e){ /* fall through and just try to download it */ }
-  const status = el('engineStatus');
-  status.textContent = 'Downloading voice…';
-  try{
-    await window.PiperEngine.ensureVoice(voiceId, progress => {
-      if(progress && progress.total){
-        status.textContent = 'Downloading voice… ' + Math.round(progress.loaded * 100 / progress.total) + '%';
-      }
-    });
-    status.textContent = '';
-    return true;
-  } catch(err){
-    console.error(err);
-    const detail = err && err.message ? err.message : String(err);
-    status.textContent = 'Could not download that voice (' + detail + ').';
-    return false;
-  }
+  if(piperReadyPromises.has(voiceId)) return piperReadyPromises.get(voiceId);
+  const promise = runPiperSerial(async () => {
+    try{
+      const stored = await window.PiperEngine.storedVoices();
+      if(Array.isArray(stored) && stored.includes(voiceId)) return true;
+    } catch(e){ /* fall through and just try to download it */ }
+    setEngineStatus('Downloading voice…');
+    try{
+      await withTimeout(window.PiperEngine.ensureVoice(voiceId, progress => {
+        if(progress && progress.total){
+          setEngineStatus('Downloading voice… ' + Math.round(progress.loaded * 100 / progress.total) + '%');
+        }
+      }), 60000, 'Voice download');
+      setEngineStatus('');
+      return true;
+    } catch(err){
+      console.error(err);
+      const detail = err && err.message ? err.message : String(err);
+      setEngineStatus('Could not download that voice (' + detail + ').');
+      return false;
+    }
+  });
+  piperReadyPromises.set(voiceId, promise);
+  promise.finally(() => {
+    if(piperReadyPromises.get(voiceId) === promise) piperReadyPromises.delete(voiceId);
+  });
+  return promise;
 }
 
 const FALLBACK_KOKORO_VOICES = ['af_heart','af_bella','af_nicole','af_sarah','af_sky','am_adam','am_michael','am_fenrir','bf_emma','bf_isabella','bm_george','bm_lewis'];
@@ -1848,26 +1870,34 @@ async function ensureKokoroReady(){
     if(!el('voiceSelect').options.length) populateKokoroVoiceSelect();
     return true;
   }
-  const status = el('engineStatus');
-  status.textContent = 'Downloading neural voice model…';
+  setEngineStatus('Downloading neural voice model…');
   try{
     await window.KokoroEngine.ensureLoaded(progress => {
       if(progress && progress.status === 'progress' && progress.progress != null){
-        status.textContent = 'Downloading model… ' + Math.round(progress.progress) + '%';
+        setEngineStatus('Downloading model… ' + Math.round(progress.progress) + '%');
       }
     });
     populateKokoroVoiceSelect();
-    status.textContent = '';
+    setEngineStatus('');
     return true;
   } catch(err){
     console.error(err);
-    status.textContent = 'Could not load the neural voice (needs internet the first time).';
+    setEngineStatus('Could not load the neural voice (needs internet the first time).');
     return false;
   }
 }
 
 // Rejects with a clear message if the wrapped promise never settles in time,
 // instead of leaving playback stuck on "Generating…" forever.
+// The Settings sheet is a full-screen overlay that sits on top of the mini-player,
+// so status text written only to the player (e.g. "Downloading voice…") is invisible
+// while Settings is open — exactly when a person is likely to be watching for it.
+// Write it to both places so it's visible regardless of which is showing.
+function setEngineStatus(text){
+  el('engineStatus').textContent = text;
+  el('settingsEngineStatus').textContent = text;
+}
+
 function withTimeout(promise, ms, label){
   return new Promise((resolve, reject) => {
     const t = setTimeout(() => reject(new Error(label + ' timed out after ' + Math.round(ms/1000) + 's')), ms);
@@ -1959,8 +1989,9 @@ function getPiperAudio(chapterIdx, sentenceIdx){
     if(!voiceId) return null;
     const text = speechFilteredText(ch.sentences[sentenceIdx]) || ' ';
     console.time('piper-generate:' + key);
-    const promise = withTimeout(window.PiperEngine.generateBlob(text, voiceId), 60000, 'Voice generation')
-      .finally(() => console.timeEnd('piper-generate:' + key));
+    const promise = runPiperSerial(() =>
+      withTimeout(window.PiperEngine.generateBlob(text, voiceId), 60000, 'Voice generation')
+    ).finally(() => console.timeEnd('piper-generate:' + key));
     promise.catch(() => { neuralAudioCache.delete(key); });
     neuralAudioCache.set(key, promise);
   }
@@ -1993,7 +2024,7 @@ function speakCurrentSystem(){
   renderReadingWindow();
   updateProgressBar();
   if(typeof speechSynthesis === 'undefined'){
-    el('engineStatus').textContent = 'System voice is not available in this browser.';
+    setEngineStatus('System voice is not available in this browser.');
     isPlaying = false; updatePlayButton();
     return;
   }
@@ -2027,20 +2058,20 @@ async function speakCurrentKokoro(){
     if(!ok){ isPlaying = false; updatePlayButton(); return; }
   }
 
-  el('engineStatus').textContent = 'Generating…';
+  setEngineStatus('Generating…');
   let blob;
   try{
     blob = await getKokoroAudio(chapterIdx, sentenceIdx);
   } catch(err){
     console.error(err);
     const detail = err && err.message ? err.message : 'unknown error';
-    el('engineStatus').textContent = 'Voice generation failed (' + detail + ') — skipping.';
+    setEngineStatus('Voice generation failed (' + detail + ') — skipping.');
     if(myToken !== playToken) return;
     if(isPlaying){ curSentence++; saveProgress(); speakCurrent(); }
     return;
   }
   if(myToken !== playToken || !blob) return; // playback was stopped/changed while we waited
-  el('engineStatus').textContent = '';
+  setEngineStatus('');
 
   const url = URL.createObjectURL(blob);
   const audioEl = el('ttsAudio'); // reuse one persistent element so iOS treats this as one continuous background session
@@ -2079,7 +2110,7 @@ async function speakCurrentPiper(){
 
   const voiceId = el('voiceSelect').value;
   if(!voiceId){
-    el('engineStatus').textContent = 'No Piper voice selected yet.';
+    setEngineStatus('No Piper voice selected yet.');
     isPlaying = false; updatePlayButton();
     return;
   }
@@ -2088,20 +2119,20 @@ async function speakCurrentPiper(){
   if(myToken !== playToken) return;
   if(!ready){ isPlaying = false; updatePlayButton(); return; }
 
-  el('engineStatus').textContent = 'Generating…';
+  setEngineStatus('Generating…');
   let blob;
   try{
     blob = await getPiperAudio(chapterIdx, sentenceIdx);
   } catch(err){
     console.error(err);
     const detail = err && err.message ? err.message : 'unknown error';
-    el('engineStatus').textContent = 'Voice generation failed (' + detail + ') — skipping.';
+    setEngineStatus('Voice generation failed (' + detail + ') — skipping.');
     if(myToken !== playToken) return;
     if(isPlaying){ curSentence++; saveProgress(); speakCurrent(); }
     return;
   }
   if(myToken !== playToken || !blob) return;
-  el('engineStatus').textContent = '';
+  setEngineStatus('');
 
   const url = URL.createObjectURL(blob);
   const audioEl = el('ttsAudio');
