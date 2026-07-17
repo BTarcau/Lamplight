@@ -1988,6 +1988,7 @@ function getPiperAudio(chapterIdx, sentenceIdx){
     const voiceId = el('voiceSelect').value;
     if(!voiceId) return null;
     const text = speechFilteredText(ch.sentences[sentenceIdx]) || ' ';
+    console.log('[piper] generating', key, 'with voice:', voiceId);
     console.time('piper-generate:' + key);
     const promise = runPiperSerial(() =>
       withTimeout(window.PiperEngine.generateBlob(text, voiceId), 60000, 'Voice generation')
@@ -2231,6 +2232,13 @@ el('voiceSelect').addEventListener('change', () => {
       if(v) localStorage.setItem('lamplight:systemVoiceName', v.name);
     }
   } catch(e){ /* ignore */ }
+  // Make the switch audible right away — otherwise whatever's already playing (or
+  // already generated) keeps using the old voice until the next sentence boundary,
+  // which can look like the change did nothing at all.
+  if(isPlaying){
+    stopPlayback();
+    speakCurrent();
+  }
 });
 el('lampProgress').addEventListener('click', e => {
   const rect = e.currentTarget.getBoundingClientRect();
