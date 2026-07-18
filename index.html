@@ -1441,12 +1441,23 @@ function displayFilteredText(text){
   return text.replace(re, m => m[0] + '*'.repeat(Math.max(1, m.length - 1)));
 }
 
+// Em dashes and opening parentheses read naturally with a short breath-pause,
+// but VITS/Kokoro/system voices don't treat those marks as pause cues on their
+// own — they either glide straight through or (for open-paren) go silent for a
+// beat. Swapping in a comma gives the model a pause cue it already knows how to
+// render, without being as long as a full sentence break. Speech only — the
+// on-screen text is untouched.
+function insertNaturalPauses(text){
+  return text.replace(/\s*—\s*/g, ', ').replace(/\(/g, ', ');
+}
+
 function speechFilteredText(text){
   let out = applyPronunciationRules(text);
   if(filterEnabled){
     const re = badWordsRegex();
     if(re) out = out.replace(re, '').replace(/\s{2,}/g, ' ').trim();
   }
+  out = insertNaturalPauses(out);
   return smoothDialogueTags(out);
 }
 
@@ -1992,7 +2003,8 @@ function getPiperAudio(chapterIdx, sentenceIdx){
     console.time('piper-generate:' + key);
     const promise = runPiperSerial(() =>
       withTimeout(window.PiperEngine.generateBlob(text, voiceId), 60000, 'Voice generation')
-    ).finally(() => console.timeEnd('piper-generate:' + key));
+    ).finally(() => console.timeEnd('piper-generate:' + key))
+     .then(blob => trimTrailingSilence(blob, 60)); // strip Piper's baked-in lead/tail silence, leave a natural 60ms
     promise.catch(() => { neuralAudioCache.delete(key); });
     neuralAudioCache.set(key, promise);
   }
@@ -2142,29 +2154,18 @@ async function speakCurrentPiper(){
   audioEl.src = url;
   audioEl.dataset.blobUrl = url;
 
-  // Piper bakes some silence into the end of every clip. Rather than analyzing and
-  // re-encoding the audio (which misfired badly on real output), just stop playback
-  // a small fixed amount early — capped so a short clip never loses more than 30%
-  // of itself, so this can't misfire into cutting off real speech.
-  const PIPER_TAIL_TRIM_SEC = 0.4;
+  // getPiperAudio() already trims the baked-in lead/tail silence off every clip
+  // (see trimTrailingSilence), so playback can just run to its natural end.
   let advanced = false;
   const advanceToNext = () => {
     if(advanced) return;
     advanced = true;
-    audioEl.removeEventListener('timeupdate', onTimeUpdate);
     if(myToken !== playToken || !isPlaying) return;
     curSentence++;
     saveProgress();
     speakCurrent();
   };
-  function onTimeUpdate(){
-    const d = audioEl.duration;
-    if(!isFinite(d) || d <= 0) return;
-    const cutoff = Math.max(d * 0.7, d - PIPER_TAIL_TRIM_SEC);
-    if(audioEl.currentTime >= cutoff) advanceToNext();
-  }
-  audioEl.addEventListener('timeupdate', onTimeUpdate);
-  audioEl.onended = advanceToNext; // fallback in case timeupdate/duration never fires
+  audioEl.onended = advanceToNext;
   audioEl.play().catch(err => console.error(err));
 
   const lookahead = [];
