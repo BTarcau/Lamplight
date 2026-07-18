@@ -1451,8 +1451,25 @@ function insertNaturalPauses(text){
   return text.replace(/\s*—\s*/g, ', ').replace(/\(/g, ', ');
 }
 
+// A title like "Mr." or "Dr." keeps its period once restored from the sentence-
+// splitting stage, and a voice model has no way to tell that period apart from a
+// real sentence break — it reads the same length pause either way. Expanding to
+// the full spoken word removes the period entirely, so there's nothing left to
+// misread as a stop. Limited to titles with one unambiguous spoken form (skips
+// "St."/"Mt." — Saint or Street, Mount — and "vs."/"etc.", which read fine as-is).
+const TITLE_EXPANSIONS = {
+  Mr: 'Mister', Mrs: 'Missus', Dr: 'Doctor', Prof: 'Professor',
+  Gen: 'General', Col: 'Colonel', Capt: 'Captain', Lt: 'Lieutenant',
+  Sgt: 'Sergeant', Rev: 'Reverend', Sr: 'Senior', Jr: 'Junior'
+};
+const TITLE_RE = new RegExp('\\b(' + Object.keys(TITLE_EXPANSIONS).join('|') + ')\\.', 'g');
+function expandSpokenTitles(text){
+  return text.replace(TITLE_RE, (m, word) => TITLE_EXPANSIONS[word]);
+}
+
 function speechFilteredText(text){
   let out = applyPronunciationRules(text);
+  out = expandSpokenTitles(out);
   if(filterEnabled){
     const re = badWordsRegex();
     if(re) out = out.replace(re, '').replace(/\s{2,}/g, ' ').trim();
@@ -1954,42 +1971,102 @@ function encodeWavFloat32(samples, sampleRate){
   return new Blob([buffer], {type:'audio/wav'});
 }
 
-// VITS-based models like Piper bake a bit of silence into the start/end of every
-// clip. With one clip per sentence, those silences stack up into an unnaturally
-// long gap between sentences — trim them down to a small, natural pause instead.
-async function trimTrailingSilence(blob, paddingMs){
-  paddingMs = paddingMs != null ? paddingMs : 60;
+// A fresh AudioContext per sentence risks hitting Safari's concurrent-context cap
+// after enough sentences, which makes decodeAudioData start silently failing —
+// reuse one context for the life of the page instead.
+let sharedAudioCtx = null;
+function getSharedAudioCtx(){
+  if(!sharedAudioCtx){
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    sharedAudioCtx = new AudioCtx();
+  }
+  return sharedAudioCtx;
+}
+
+// VITS-based models like Piper bake silence into the start/end of every clip —
+// and with one clip per sentence, those stack into a long gap between sentences.
+// Some voices also render a comma as a longer internal pause than reads naturally.
+// This trims the outer edges down to a small pad, AND caps any silent run inside
+// the clip (e.g. after a comma) at a shorter max, without touching the speech.
+//
+// Detection is done on short-window RMS energy rather than raw per-sample amplitude.
+// VITS-style vocoders rarely output true digital-zero during "silence" — there's
+// low-level dither/hum that flickers a handful of samples above a per-sample
+// threshold every few dozen samples. A per-sample check treats each of those flickers
+// as the end of a silent run, so a real 400ms gap gets fragmented into many tiny
+// sub-runs that each individually look "too short to cap" — and the pause survives
+// almost entirely uncompressed. Averaging energy over a short frame (15ms) smooths
+// past that noise so a genuinely quiet stretch reads as one long run, which is what
+// actually lets the cap below do its job.
+async function compressSilence(blob, opts){
+  opts = opts || {};
+  const edgePadMs = opts.edgePadMs != null ? opts.edgePadMs : 60;
+  const maxInternalGapMs = opts.maxInternalGapMs != null ? opts.maxInternalGapMs : 150;
+  const frameMs = 15;
   try{
     const arrayBuffer = await blob.arrayBuffer();
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    const ctx = new AudioCtx();
+    const ctx = getSharedAudioCtx();
     const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
     const sampleRate = audioBuffer.sampleRate;
     const data = audioBuffer.getChannelData(0);
 
-    let maxAbs = 0;
-    for(let i = 0; i < data.length; i++){
-      const a = Math.abs(data[i]);
-      if(a > maxAbs) maxAbs = a;
+    const frameLen = Math.max(1, Math.floor(sampleRate * frameMs / 1000));
+    const numFrames = Math.ceil(data.length / frameLen);
+    const frameRms = new Float32Array(numFrames);
+    let peakRms = 0;
+    for(let f = 0; f < numFrames; f++){
+      const start = f * frameLen;
+      const end = Math.min(data.length, start + frameLen);
+      let sum = 0;
+      for(let i = start; i < end; i++) sum += data[i] * data[i];
+      const rms = Math.sqrt(sum / Math.max(1, end - start));
+      frameRms[f] = rms;
+      if(rms > peakRms) peakRms = rms;
     }
-    const threshold = Math.max(maxAbs * 0.02, 0.005);
+    // A frame counts as silent based on its averaged energy, not a single sample —
+    // a stray noise spike no longer splits what is really one continuous pause.
+    const rmsThreshold = Math.max(peakRms * 0.04, 0.004);
+    const frameSilent = f => frameRms[f] < rmsThreshold;
 
-    let start = 0, end = data.length - 1;
-    while(start < data.length && Math.abs(data[start]) < threshold) start++;
-    while(end > start && Math.abs(data[end]) < threshold) end--;
+    let startF = 0, endF = numFrames - 1;
+    while(startF < numFrames && frameSilent(startF)) startF++;
+    while(endF > startF && frameSilent(endF)) endF--;
+    if(endF <= startF) return blob; // clip looked fully silent — bail out safely, keep original
 
-    const padSamples = Math.floor(sampleRate * paddingMs / 1000);
-    start = Math.max(0, start - padSamples);
-    end = Math.min(data.length - 1, end + padSamples);
+    const edgePadFrames = Math.max(1, Math.ceil(edgePadMs / frameMs));
+    const maxInternalGapFrames = Math.max(1, Math.ceil(maxInternalGapMs / frameMs));
+    const regionStartF = Math.max(0, startF - edgePadFrames);
+    const regionEndF = Math.min(numFrames - 1, endF + edgePadFrames);
 
-    ctx.close();
-    if(end <= start) return blob; // clip looked fully silent — bail out safely, keep original
-    return encodeWavFloat32(data.slice(start, end + 1), sampleRate);
+    // Walk the speech region frame-by-frame, keeping every non-silent frame as-is,
+    // but capping the length of any run of consecutive silent frames along the way —
+    // this naturally covers both the outer pads (short runs, kept in full) and any
+    // internal gap after a comma or title (long runs, trimmed down to the cap).
+    const keptFrames = [];
+    let f = regionStartF;
+    while(f <= regionEndF){
+      if(!frameSilent(f)){ keptFrames.push(f); f++; continue; }
+      const runStart = f;
+      while(f <= regionEndF && frameSilent(f)) f++;
+      const runLen = f - runStart;
+      const cap = Math.min(runLen, maxInternalGapFrames);
+      for(let k = 0; k < cap; k++) keptFrames.push(runStart + k);
+    }
+
+    const kept = [];
+    keptFrames.forEach(fi => {
+      const s = fi * frameLen;
+      const e = Math.min(data.length, s + frameLen);
+      for(let i = s; i < e; i++) kept.push(data[i]);
+    });
+
+    return encodeWavFloat32(Float32Array.from(kept), sampleRate);
   } catch(err){
-    console.warn('Silence trim failed, using original audio:', err);
+    console.warn('Silence compression failed, using original audio:', err);
     return blob;
   }
 }
+
 
 function getPiperAudio(chapterIdx, sentenceIdx){
   const key = chapterIdx + '-' + sentenceIdx;
@@ -2004,7 +2081,7 @@ function getPiperAudio(chapterIdx, sentenceIdx){
     const promise = runPiperSerial(() =>
       withTimeout(window.PiperEngine.generateBlob(text, voiceId), 60000, 'Voice generation')
     ).finally(() => console.timeEnd('piper-generate:' + key))
-     .then(blob => trimTrailingSilence(blob, 60)); // strip Piper's baked-in lead/tail silence, leave a natural 60ms
+     .then(blob => compressSilence(blob)); // strip lead/tail silence, cap any internal gap (e.g. after a comma)
     promise.catch(() => { neuralAudioCache.delete(key); });
     neuralAudioCache.set(key, promise);
   }
