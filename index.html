@@ -1398,6 +1398,19 @@ function restoreDialogueEndings(text){
   return text.replace(/\u0002/g, '?').replace(/\u0003/g, '!');
 }
 
+// A sentence ending in terminal punctuation immediately followed by a closing quote
+// mark, with nothing else after it, means quoted dialogue is finishing here with no
+// attribution tag trailing it — a natural "end of the exchange" moment where a
+// narrator would actually take a slightly longer beat before continuing. Cases where
+// a tag *does* follow right away ("...?" asked Peter.) were already merged into one
+// sentence by protectDialogueEndings above, so they never reach this check — only
+// genuine ends of a line of dialogue match.
+const QUOTED_SENTENCE_END_RE = /[.!?][)\]'"\u2019\u201D]+\s*$/;
+function endsQuotedDialogue(text){
+  return QUOTED_SENTENCE_END_RE.test((text || '').trim());
+}
+const DIALOGUE_END_PAUSE_MS = 220; // extra pause after quoted dialogue ends, on top of the normal between-sentence gap
+
 function splitSentences(text){
   const cleaned = protectDialogueEndings(protectAbbreviations(text.replace(/\s+/g, ' ').trim()));
   if(!cleaned) return [];
@@ -2111,6 +2124,7 @@ function speakCurrent(){
 function speakCurrentSystem(){
   const myToken = playToken;
   const ch = chapters[curChapter];
+  const sentenceIdx = curSentence;
   renderReadingWindow();
   updateProgressBar();
   if(typeof speechSynthesis === 'undefined'){
@@ -2118,7 +2132,7 @@ function speakCurrentSystem(){
     isPlaying = false; updatePlayButton();
     return;
   }
-  const utter = new SpeechSynthesisUtterance(speechFilteredText(ch.sentences[curSentence]) || ' ');
+  const utter = new SpeechSynthesisUtterance(speechFilteredText(ch.sentences[sentenceIdx]) || ' ');
   const idx = el('voiceSelect').value;
   if(systemVoices[idx]) utter.voice = systemVoices[idx];
   utter.rate = parseFloat(el('rateSlider').value);
@@ -2126,7 +2140,12 @@ function speakCurrentSystem(){
     if(myToken !== playToken || !isPlaying) return;
     curSentence++;
     saveProgress();
-    speakCurrent();
+    const extraPause = endsQuotedDialogue(ch.sentences[sentenceIdx]) ? DIALOGUE_END_PAUSE_MS : 0;
+    if(extraPause > 0){
+      setTimeout(() => { if(myToken === playToken && isPlaying) speakCurrent(); }, extraPause);
+    } else {
+      speakCurrent();
+    }
   };
   utter.onerror = (e) => {
     if(myToken !== playToken) return;
@@ -2169,11 +2188,17 @@ async function speakCurrentKokoro(){
   if(audioEl.dataset.blobUrl) URL.revokeObjectURL(audioEl.dataset.blobUrl);
   audioEl.src = url;
   audioEl.dataset.blobUrl = url;
+  const finishedTextKokoro = chapters[chapterIdx].sentences[sentenceIdx];
   audioEl.onended = () => {
     if(myToken !== playToken || !isPlaying) return;
     curSentence++;
     saveProgress();
-    speakCurrent();
+    const extraPause = endsQuotedDialogue(finishedTextKokoro) ? DIALOGUE_END_PAUSE_MS : 0;
+    if(extraPause > 0){
+      setTimeout(() => { if(myToken === playToken && isPlaying) speakCurrent(); }, extraPause);
+    } else {
+      speakCurrent();
+    }
   };
   audioEl.play().catch(err => console.error(err));
 
@@ -2234,13 +2259,19 @@ async function speakCurrentPiper(){
   // getPiperAudio() already trims the baked-in lead/tail silence off every clip
   // (see trimTrailingSilence), so playback can just run to its natural end.
   let advanced = false;
+  const finishedTextPiper = chapters[chapterIdx].sentences[sentenceIdx];
   const advanceToNext = () => {
     if(advanced) return;
     advanced = true;
     if(myToken !== playToken || !isPlaying) return;
     curSentence++;
     saveProgress();
-    speakCurrent();
+    const extraPause = endsQuotedDialogue(finishedTextPiper) ? DIALOGUE_END_PAUSE_MS : 0;
+    if(extraPause > 0){
+      setTimeout(() => { if(myToken === playToken && isPlaying) speakCurrent(); }, extraPause);
+    } else {
+      speakCurrent();
+    }
   };
   audioEl.onended = advanceToNext;
   audioEl.play().catch(err => console.error(err));
