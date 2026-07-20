@@ -666,13 +666,24 @@
         if(msg.type === 'load'){
           if(ttsInstance){ self.postMessage({ type: 'load:done' }); return; }
           if(!loadingPromise){
-            // Stick to q8, not q4: q4 uses 4-bit block quantization (the MatMulNBits
-            // ONNX op), which onnxruntime-web's WASM execution provider doesn't
-            // reliably support — it can fail the model load entirely, on any
-            // platform, not just memory-constrained ones. q8 is the safe floor here.
+            // Prefer WebGPU when it's available: it's dramatically faster than WASM for
+            // this kind of matmul-heavy inference, and every reference implementation
+            // (Hugging Face's own kokoro worker included) detects and prefers it the same
+            // way. This is safe to do unconditionally here because Safari — the one
+            // browser where WebGPU is unstable enough to crash the whole tab — never
+            // reaches this code at all: isLikelySafari() in the main script already
+            // diverts Safari to Piper before ensureKokoroReadyGuarded() ever tries to
+            // load Kokoro. Only non-Safari browsers (Chrome, Edge, Firefox) get here.
+            //
+            // dtype follows device, not the other way around: Kokoro's own docs
+            // recommend fp32 for WebGPU (its 8-bit path is tuned for CPU efficiency and
+            // doesn't carry the same benefit on GPU) and q8 for WASM, where q4 would use
+            // the MatMulNBits op that onnxruntime-web's WASM backend doesn't reliably
+            // support — it can fail the model load entirely, not just run slower.
+            const useWebGPU = !!(self.navigator && self.navigator.gpu);
             loadingPromise = KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", {
-              dtype: "q8",
-              device: "wasm",
+              dtype: useWebGPU ? "fp32" : "q8",
+              device: useWebGPU ? "webgpu" : "wasm",
               progress_callback: (progress) => {
                 if(progress && progress.status === 'progress' && progress.progress != null){
                   self.postMessage({ type: 'load:progress', progress: progress.progress });
