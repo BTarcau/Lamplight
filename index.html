@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>Lamplight Reader — listen to your books</title>
+<title>Lamplight Reader ‚Äî listen to your books</title>
 <link rel="apple-touch-icon" sizes="180x180" href="icon-180.png">
 <link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
 <link rel="icon" type="image/png" sizes="32x32" href="icon-32.png">
@@ -426,7 +426,7 @@
 
 <header>
   <h1><span class="dot"></span>Lamplight Reader</h1>
-  <span class="tag" id="headerTag">Your books, read aloud — entirely on this device</span>
+  <span class="tag" id="headerTag">Your books, read aloud ‚Äî entirely on this device</span>
   <div class="toolbar-row hidden" id="headerActions">
     <button class="chip" id="newBookBtn">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="15,5 8,12 15,19"/></svg>
@@ -464,7 +464,7 @@
             <path d="M9 13.5l3-3 3 3M12 10.5V17"/>
           </svg>
           <h3>Bring a book to the lamp</h3>
-          <p>Drop an EPUB or PDF here, or choose a file. Nothing is uploaded anywhere — parsing and reading both happen in this browser tab.</p>
+          <p>Drop an EPUB or PDF here, or choose a file. Nothing is uploaded anywhere ‚Äî parsing and reading both happen in this browser tab.</p>
           <label class="btn" for="fileInput">Choose a file</label>
           <input type="file" id="fileInput" accept=".epub,.pdf">
           <div class="status" id="loadStatus"></div>
@@ -556,7 +556,7 @@
         <span class="settings-row-label">Speed</span>
         <div class="speed-control">
           <input type="range" id="rateSlider" min="0.6" max="2" step="0.05" value="1">
-          <span class="rate-label" id="rateLabel">1.0×</span>
+          <span class="rate-label" id="rateLabel">1.0√ó</span>
         </div>
       </div>
     </div>
@@ -614,7 +614,7 @@
         </div>
       </div>
     </div>
-    <p class="footnote">Fixes mispronounced names or words when read aloud — matches the text anywhere it appears. Leave "Say instead" blank to skip that word/phrase entirely. Applies only to speech; the on-screen text is unchanged.</p>
+    <p class="footnote">Fixes mispronounced names or words when read aloud ‚Äî matches the text anywhere it appears. Leave "Say instead" blank to skip that word/phrase entirely. Applies only to speech; the on-screen text is unchanged.</p>
   </div>
 </div>
 
@@ -624,19 +624,19 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 
 <script type="module">
-  // Kokoro TTS — 82M-parameter neural voice, runs 100% locally via WASM. Loaded lazily,
+  // Kokoro TTS ‚Äî 82M-parameter neural voice, runs 100% locally via WASM. Loaded lazily,
   // only when the person actually presses play (it's a real download).
   //
   // Model loading and per-sentence generation both run inside a dedicated Web Worker,
   // not here on the main thread. WASM inference on the main thread can occupy it long
   // enough that the browser's own hang detector kills the tab before our app-level
-  // withTimeout() ever gets a chance to run — setTimeout callbacks only fire when the
+  // withTimeout() ever gets a chance to run ‚Äî setTimeout callbacks only fire when the
   // event loop is free, and a busy main thread starves them just like everything else.
   // A worker has its own thread, so the UI (and our timeout) stay responsive regardless
   // of how long a given sentence takes to synthesize.
   //
   // The worker is built from a Blob URL rather than a separate file, since this whole
-  // app is one HTML file — module workers support static `import` of a full URL from
+  // app is one HTML file ‚Äî module workers support static `import` of a full URL from
   // inside a Blob just like a normal <script type="module"> can, so kokoro-js still
   // loads straight from the CDN, just inside the worker's own thread instead of this one.
   const KOKORO_WORKER_SRC = `
@@ -644,14 +644,14 @@
 
     // onnxruntime-web (which kokoro-js runs on) locates its .wasm binaries relative to
     // import.meta.url by default. That works fine for a normal <script type="module">
-    // loaded from a real CDN path, but this worker is built from a Blob URL — inside it,
+    // loaded from a real CDN path, but this worker is built from a Blob URL ‚Äî inside it,
     // import.meta.url IS the blob: URL, which has no sibling files to resolve a .wasm
     // path against. Left on auto-detect, the load can hang indefinitely waiting on a
     // fetch to a URL that can never resolve, with no error ever thrown to catch. Pointing
     // wasmPaths at kokoro-js's actual onnxruntime-web dependency version on jsdelivr
     // sidesteps the guesswork entirely. kokoro-js only re-exports a partial 'env' (just
     // cacheDir/wasmPaths, forwarded to transformers.js's underlying onnx backend config)
-    // — that's all we need here.
+    // ‚Äî that's all we need here.
     env.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0-dev.20250409-89f8206ba4/dist/";
 
     let ttsInstance = null;
@@ -683,8 +683,8 @@
             // Prefer WebGPU when it's available: it's dramatically faster than WASM for
             // this kind of matmul-heavy inference, and every reference implementation
             // (Hugging Face's own kokoro worker included) detects and prefers it the same
-            // way. This is safe to do unconditionally here because Safari — the one
-            // browser where WebGPU is unstable enough to crash the whole tab — never
+            // way. This is safe to do unconditionally here because Safari ‚Äî the one
+            // browser where WebGPU is unstable enough to crash the whole tab ‚Äî never
             // reaches this code at all: isLikelySafari() in the main script already
             // diverts Safari to Piper before ensureKokoroReadyGuarded() ever tries to
             // load Kokoro. Only non-Safari browsers (Chrome, Edge, Firefox) get here.
@@ -693,17 +693,17 @@
             // recommend fp32 for WebGPU (its 8-bit path is tuned for CPU efficiency and
             // doesn't carry the same benefit on GPU) and q8 for WASM, where q4 would use
             // the MatMulNBits op that onnxruntime-web's WASM backend doesn't reliably
-            // support — it can fail the model load entirely, not just run slower.
+            // support ‚Äî it can fail the model load entirely, not just run slower.
             const useWebGPU = !!(self.navigator && self.navigator.gpu);
             console.log('[kokoro-worker] navigator.gpu present:', useWebGPU, '-> device:', useWebGPU ? 'webgpu' : 'wasm', 'dtype:', useWebGPU ? 'fp32' : 'q8');
             if(useWebGPU){
-              // Diagnostic only — separate from whatever adapter transformers.js requests
+              // Diagnostic only ‚Äî separate from whatever adapter transformers.js requests
               // internally for the actual model; requesting one here doesn't consume or
               // lock anything, it's just a probe so we can see in the console whether the
               // browser handed back a real GPU adapter or a software/CPU-emulated one
               // (which would be slower than plain WASM, not faster).
               self.navigator.gpu.requestAdapter().then(adapter => {
-                if(!adapter){ console.log('[kokoro-worker] requestAdapter() returned null — no WebGPU adapter available'); return; }
+                if(!adapter){ console.log('[kokoro-worker] requestAdapter() returned null ‚Äî no WebGPU adapter available'); return; }
                 console.log('[kokoro-worker] WebGPU adapter info:', adapter.info || '(no .info available)', 'isFallbackAdapter:', adapter.isFallbackAdapter);
               }).catch(err => console.log('[kokoro-worker] requestAdapter() probe failed:', err));
             }
@@ -819,7 +819,7 @@
 </script>
 
 <script type="module">
-  // Piper TTS — a different, lighter-weight neural voice model than Kokoro, worth
+  // Piper TTS ‚Äî a different, lighter-weight neural voice model than Kokoro, worth
   // offering as an alternative since some devices run it more smoothly. Each voice
   // is its own separate download (unlike Kokoro's one bundle with many voices),
   // fetched only when that specific voice is actually used.
@@ -855,7 +855,7 @@ const neuralAudioCache = new Map(); // "chapter-sentence" -> Promise<Blob>
 let playToken = 0;            // increments whenever playback is stopped, to cancel stale async work
 let filterEnabled = true;
 let engine = 'piper'; // default for new users; 'kokoro' is the other available choice
-let pronunciationRules = []; // [{find, replace, matchCase}] — applied to speech only
+let pronunciationRules = []; // [{find, replace, matchCase}] ‚Äî applied to speech only
 let customBadWords = [];
 
 const el = id => document.getElementById(id);
@@ -888,11 +888,11 @@ el('settingsBtn').addEventListener('click', async () => {
     const sel = el('voiceSelect');
     sel.innerHTML = '';
     const placeholder = document.createElement('option');
-    placeholder.textContent = 'Loading voices…';
+    placeholder.textContent = 'Loading voices‚Ä¶';
     sel.appendChild(placeholder);
     ensureKokoroReadyGuarded(); // populates voiceSelect itself once the model finishes loading (or falls back to Piper on iOS if declined)
   } else if(!el('voiceSelect').options.length){
-    // Only (re)build the list if it's empty — reopening Settings shouldn't reset
+    // Only (re)build the list if it's empty ‚Äî reopening Settings shouldn't reset
     // a voice the person already picked.
     if(engine === 'piper'){
       await populatePiperVoiceSelect();
@@ -981,7 +981,7 @@ el('engineSelect').value = engine;
 // ---------------- Local server backend (self-hosted Kokoro/Piper over Tailscale) ----------------
 // Runs the exact same Kokoro/Piper models on the person's own Mac instead of in-browser
 // WASM, so a phone doesn't have to do the heavy lifting itself. This works by swapping
-// out which object window.KokoroEngine / window.PiperEngine point to — the server-backed
+// out which object window.KokoroEngine / window.PiperEngine point to ‚Äî the server-backed
 // versions below implement the identical interface the WASM engines already expose
 // (ensureLoaded/isLoaded/listVoices/generateBlob for Kokoro; listVoices/storedVoices/
 // ensureVoice/generateBlob for Piper), so every existing call site (speakCurrentKokoro,
@@ -1047,7 +1047,7 @@ const piperServerEngine = {
     return piperServerVoicesCache;
   },
   async storedVoices(){
-    // Nothing to download — the server already has every voice ready — so report the
+    // Nothing to download ‚Äî the server already has every voice ready ‚Äî so report the
     // full catalog as "stored" and ensurePiperVoiceReady() takes its instant-return path.
     if(piperServerVoicesCache) return piperServerVoicesCache;
     return await piperServerEngine.listVoices();
@@ -1063,7 +1063,7 @@ function applyEngineBackends(){
 }
 // Swapping in the right backend and prepping the restored engine (so nothing has to
 // download/connect later when Play is first pressed) happen in the same callback,
-// deliberately — keeping them as one sequence avoids a race against the "which engine
+// deliberately ‚Äî keeping them as one sequence avoids a race against the "which engine
 // is this book restoring?" logic below running before the server/WASM swap has happened.
 waitForGlobal('KokoroEngine').then(ke => {
   if(!ke) return;
@@ -1088,7 +1088,7 @@ async function refreshVoiceListForCurrentEngine(){
     const sel = el('voiceSelect');
     sel.innerHTML = '';
     const placeholder = document.createElement('option');
-    placeholder.textContent = 'Loading voices…';
+    placeholder.textContent = 'Loading voices‚Ä¶';
     sel.appendChild(placeholder);
     ensureKokoroReadyGuarded();
   } else if(engine === 'piper'){
@@ -1119,7 +1119,7 @@ el('serverUrlInput').addEventListener('change', async () => {
 });
 
 // The Kokoro/Piper engines live in <script type="module"> blocks that fetch a
-// library from a CDN — they may not be attached to window yet at this exact point
+// library from a CDN ‚Äî they may not be attached to window yet at this exact point
 // in page load, so wait for whichever one we need rather than assuming it's ready.
 function waitForGlobal(name, timeoutMs){
   return new Promise(resolve => {
@@ -1173,6 +1173,34 @@ if('mediaSession' in navigator){
   navigator.mediaSession.setActionHandler('previoustrack', () => el('prevBtn').click());
   navigator.mediaSession.setActionHandler('nexttrack', () => el('nextBtn').click());
 }
+
+// Locking the screen (or backgrounding the app) doesn't stop the <audio> element
+// itself from playing ‚Äî iOS keeps that going ‚Äî but it heavily throttles the JS/
+// network work needed to generate the *next* sentence once the current one ends.
+// The fix is to already have several sentences' worth of audio sitting in
+// neuralAudioCache before that happens: a normal amount ahead during regular
+// playback, and a much bigger one-time burst the instant the page goes hidden,
+// since that's the last real chance to get ahead of the throttling.
+const NORMAL_LOOKAHEAD = 6;
+const BACKGROUND_BURST_LOOKAHEAD = 40;
+
+function prefetchAhead(chapterIdx, sentenceIdx, count, getAudioFn){
+  let c = chapterIdx, s = sentenceIdx;
+  for(let n = 0; n < count; n++){
+    s++;
+    if(s >= chapters[c].sentences.length){
+      c++; s = 0;
+      if(c >= chapters.length || !chapters[c].sentences.length) break;
+    }
+    getAudioFn(c, s);
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if(!document.hidden || !isPlaying || !chapters.length) return;
+  const getAudioFn = engine === 'kokoro' ? getKokoroAudio : getPiperAudio;
+  prefetchAhead(curChapter, curSentence, BACKGROUND_BURST_LOOKAHEAD, getAudioFn);
+});
 
 // ---------------- File handling ----------------
 el('fileInput').addEventListener('change', e => { if(e.target.files[0]) handleFile(e.target.files[0]); });
@@ -1383,7 +1411,7 @@ function startLibraryRename(rec, labelEl, rowEl){
 async function handleFile(file, opts){
   opts = opts || {};
   neuralAudioCache.clear();
-  loadStatus.textContent = opts.isAutoOpen ? ('Reopening ' + file.name + ' …') : ('Reading ' + file.name + ' …');
+  loadStatus.textContent = opts.isAutoOpen ? ('Reopening ' + file.name + ' ‚Ä¶') : ('Reading ' + file.name + ' ‚Ä¶');
   try{
     const name = file.name.toLowerCase();
     let title = file.name.replace(/\.(epub|pdf)$/i,'');
@@ -1400,7 +1428,7 @@ async function handleFile(file, opts){
 
     bookKey = 'lamplight:' + title + ':' + file.size;
     el('bookTitle').textContent = opts.displayName || title;
-    el('bookSub').textContent = chapters.length + (chapters.length===1?' chapter':' chapters') + ' · ' + file.name;
+    el('bookSub').textContent = chapters.length + (chapters.length===1?' chapter':' chapters') + ' ¬∑ ' + file.name;
 
     renderChapterList();
     const saved = loadProgress();
@@ -1419,11 +1447,11 @@ async function handleFile(file, opts){
       showToast('Resumed where you left off (chapter ' + (saved.chapter+1) + ').');
     }
 
-    saveBookToLibrary(file, buf); // fire-and-forget — adds/updates this book in the library
+    saveBookToLibrary(file, buf); // fire-and-forget ‚Äî adds/updates this book in the library
   } catch(err){
     console.error(err);
     loadStatus.textContent = opts.isAutoOpen
-      ? 'Could not reopen your last book automatically — choose a file below.'
+      ? 'Could not reopen your last book automatically ‚Äî choose a file below.'
       : 'Something went wrong opening that file: ' + err.message;
   }
 }
@@ -1450,7 +1478,7 @@ function buildChapterFromParagraphTexts(title, paraTexts){
 
 // ---------------- EPUB parsing ----------------
 // Resolves a possibly-relative href against a base directory the same way a browser
-// resolves relative URLs (handling "./", "../", etc.), without ever hitting the network —
+// resolves relative URLs (handling "./", "../", etc.), without ever hitting the network ‚Äî
 // the "file:///" scheme just gives URL something absolute to resolve against.
 function resolveEpubPath(baseDir, href){
   const clean = href.split('#')[0];
@@ -1462,8 +1490,8 @@ function resolveEpubPath(baseDir, href){
   }
 }
 
-// Real chapter titles live in the EPUB's own navigation document — nav.xhtml (EPUB3)
-// or toc.ncx (EPUB2) — not in each content file's own <title>/<h1>. (Per-file <title>
+// Real chapter titles live in the EPUB's own navigation document ‚Äî nav.xhtml (EPUB3)
+// or toc.ncx (EPUB2) ‚Äî not in each content file's own <title>/<h1>. (Per-file <title>
 // tags are frequently just the book's own title repeated in every single file, which
 // is why using them was producing an identical "chapter title" over and over.)
 // Returns a Map from resolved-file-path -> chapter title, keyed by the first spine
@@ -1536,7 +1564,7 @@ async function parseEpub(buf){
   const spineIds = Array.from(opfDoc.querySelectorAll('spine > itemref')).map(i => i.getAttribute('idref'));
   const tocMap = await loadEpubTocMap(zip, opfDoc, opfDir, manifest);
 
-  // Chapters are grouped by TOC entry, not by spine file — many real EPUBs split one
+  // Chapters are grouped by TOC entry, not by spine file ‚Äî many real EPUBs split one
   // logical chapter across several physical files (e.g. "chNN_split_001.html",
   // "chNN_split_002.html"), which used to each show up as their own separate,
   // identically-titled "chapter". A spine file with no TOC entry of its own is a
@@ -1573,7 +1601,7 @@ async function parseEpub(buf){
     blocks = blocks.filter(b => !b.querySelector(blockSelector));
 
     // textContent (unlike innerText) doesn't depend on the page actually being
-    // rendered/laid out — this document never gets attached to the page, and
+    // rendered/laid out ‚Äî this document never gets attached to the page, and
     // innerText silently returns empty text for detached nodes in some browsers.
     let paraTexts = blocks.map(b => b.textContent.replace(/\s+/g, ' ').trim()).filter(t => t.length > 0);
     if(!paraTexts.length){
@@ -1592,14 +1620,14 @@ async function parseEpub(buf){
       // text happens to repeat an earlier one.
       groups.push({ title: tocTitle, paraTexts: [] });
     } else if(!groups.length){
-      // No TOC entry has matched yet at all — front matter (cover, title page, etc.)
+      // No TOC entry has matched yet at all ‚Äî front matter (cover, title page, etc.)
       // ahead of the book's first real TOC-listed chapter. Prefer an actual heading
       // in the body over the document's <title> (which is often just the book's own
       // title repeated in every file, not this file's own heading).
       const heading = (doc.body.querySelector('h1,h2,h3') || {}).textContent;
       groups.push({ title: (heading || '').trim() || 'Front Matter', paraTexts: [] });
     }
-    // else: continuation file of whichever TOC chapter is currently open — falls
+    // else: continuation file of whichever TOC chapter is currently open ‚Äî falls
     // through and gets appended to it below, with no new chapter created.
     groups[groups.length - 1].paraTexts.push(...paraTexts);
   }
@@ -1655,7 +1683,7 @@ async function extractPdfPageParagraphs(page){
 
 // Resolves an outline entry's destination to a 1-indexed page number. `dest` is
 // either an explicit destination array already, or a named destination string that
-// has to be looked up first — either way it ultimately points at a page reference.
+// has to be looked up first ‚Äî either way it ultimately points at a page reference.
 async function resolvePdfOutlineDest(pdf, dest){
   try{
     let d = dest;
@@ -1671,8 +1699,8 @@ async function parsePdf(buf){
   const result = [];
 
   // Real chapter titles and boundaries live in the PDF's own outline/bookmarks when
-  // the publisher included one (most converted ebooks do) — far more useful than an
-  // arbitrary page count, and gives real chapter names instead of "Pages 9–16". Only
+  // the publisher included one (most converted ebooks do) ‚Äî far more useful than an
+  // arbitrary page count, and gives real chapter names instead of "Pages 9‚Äì16". Only
   // top-level entries are used, not nested sub-headings, so this stays at chapter
   // granularity rather than every subsection.
   let plannedChapters = null;
@@ -1680,7 +1708,7 @@ async function parsePdf(buf){
     let outline = await pdf.getOutline();
     // Some PDFs wrap their entire outline under a single root bookmark named after
     // the book itself, with the real chapter-level entries one level down as its
-    // children — unwrap that (repeatedly, in case of more than one such wrapper)
+    // children ‚Äî unwrap that (repeatedly, in case of more than one such wrapper)
     // rather than treating that lone root as the only "chapter".
     while(outline && outline.length === 1 && outline[0].items && outline[0].items.length){
       outline = outline[0].items;
@@ -1695,7 +1723,7 @@ async function parsePdf(buf){
       }
       resolved.sort((a,b) => a.page - b.page);
       // Some PDFs point several outline entries at the exact same page (e.g. a
-      // cover/title page listed twice) — keep only the first for any given page.
+      // cover/title page listed twice) ‚Äî keep only the first for any given page.
       const deduped = resolved.filter((r,i) => i === 0 || r.page !== resolved[i-1].page);
       if(deduped.length){
         plannedChapters = deduped.map((r,i) => ({
@@ -1703,8 +1731,8 @@ async function parsePdf(buf){
           startPage: r.page,
           endPage: (i+1 < deduped.length) ? deduped[i+1].page - 1 : pdf.numPages,
         }));
-        // Anything before the first bookmark (unlisted front matter) still gets read —
-        // just not silently dropped — rather than assuming it's always skippable.
+        // Anything before the first bookmark (unlisted front matter) still gets read ‚Äî
+        // just not silently dropped ‚Äî rather than assuming it's always skippable.
         if(plannedChapters[0].startPage > 1){
           plannedChapters.unshift({ title: 'Front Matter', startPage: 1, endPage: plannedChapters[0].startPage - 1 });
         }
@@ -1733,7 +1761,7 @@ async function parsePdf(buf){
     const page = await pdf.getPage(i);
     bucketParas.push(...(await extractPdfPageParagraphs(page)));
     if(i % PAGES_PER_CHAPTER === 0 || i === pdf.numPages){
-      const label = bucketStart === i ? ('Page ' + i) : ('Pages ' + bucketStart + '–' + i);
+      const label = bucketStart === i ? ('Page ' + i) : ('Pages ' + bucketStart + '‚Äì' + i);
       const chapterObj = buildChapterFromParagraphTexts(label, bucketParas);
       if(chapterObj) result.push(chapterObj);
       bucketParas = [];
@@ -1746,7 +1774,7 @@ async function parsePdf(buf){
 // ---------------- Sentence splitting ----------------
 // Small TTS models like Kokoro can clip the end of very long inputs (their duration
 // prediction isn't reliable that far out), so beyond MAX_TTS_CHARS we further split
-// at natural pause points — this affects TTS/highlight granularity only, not meaning.
+// at natural pause points ‚Äî this affects TTS/highlight granularity only, not meaning.
 const MAX_TTS_CHARS = 200;
 
 function splitOnPunct(text, punct){
@@ -1782,7 +1810,7 @@ function splitLongClause(text, maxChars){
   return out;
 }
 
-// Protects common abbreviations and initials (Mr. Mrs. Dr. St. — and things like "C. S. Lewis")
+// Protects common abbreviations and initials (Mr. Mrs. Dr. St. ‚Äî and things like "C. S. Lewis")
 // from being mistaken for sentence endings, by temporarily hiding their periods.
 const ABBR_RE = /\b(Mr|Mrs|Ms|Dr|St|Mt|Prof|Rev|Gen|Col|Capt|Lt|Sgt|Sr|Jr|vs|etc|Ph\.D|i\.e|e\.g)\./g;
 const INITIAL_RE = /\b([A-Z])\.(?=\s*[A-Z]\.|\s+[A-Z]\b)/g;
@@ -1795,7 +1823,7 @@ function restoreAbbreviations(text){
 }
 
 // A sentence terminator is very often followed immediately by a closing quote or
-// bracket with no space ("...that means." with no gap before the closing quote) —
+// bracket with no space ("...that means." with no gap before the closing quote) ‚Äî
 // without allowing for that, the regex below fails to match at all and silently
 // drops the whole sentence.
 const SENT_RE = /[^.!?]+[.!?]+[)\]'"\u2019\u201D]*(?:\s+|$)|[^.!?]+$/g;
@@ -1804,7 +1832,7 @@ const SENT_RE = /[^.!?]+[.!?]+[)\]'"\u2019\u201D]*(?:\s+|$)|[^.!?]+$/g;
 const DIALOGUE_TAG_VERBS = 'said|asked|replied|answered|cried|shouted|whispered|muttered|exclaimed|continued|added|began|called|retorted|murmured|sighed|snapped|gasped|sobbed|roared|growled|chuckled|laughed|wondered|declared|announced|remarked|grumbled|protested|went on';
 
 // A quoted question or exclamation immediately followed by its attribution tag
-// ("Are you coming?" asked Peter.) is one continuous thought, not two sentences —
+// ("Are you coming?" asked Peter.) is one continuous thought, not two sentences ‚Äî
 // but SENT_RE would otherwise treat the ?/! as a hard sentence break, giving it
 // its own separate TTS chunk with an audible gap before "asked Peter." Hide the
 // punctuation here (same trick as protectAbbreviations) so it stays one chunk;
@@ -1819,10 +1847,10 @@ function restoreDialogueEndings(text){
 
 // A sentence ending in terminal punctuation immediately followed by a closing quote
 // mark, with nothing else after it, means quoted dialogue is finishing here with no
-// attribution tag trailing it — a natural "end of the exchange" moment where a
+// attribution tag trailing it ‚Äî a natural "end of the exchange" moment where a
 // narrator would actually take a slightly longer beat before continuing. Cases where
 // a tag *does* follow right away ("...?" asked Peter.) were already merged into one
-// sentence by protectDialogueEndings above, so they never reach this check — only
+// sentence by protectDialogueEndings above, so they never reach this check ‚Äî only
 // genuine ends of a line of dialogue match.
 const QUOTED_SENTENCE_END_RE = /[.!?][)\]'"\u2019\u201D]+\s*$/;
 function endsQuotedDialogue(text){
@@ -1875,20 +1903,20 @@ function displayFilteredText(text){
 
 // Em dashes and opening parentheses read naturally with a short breath-pause,
 // but VITS/Kokoro/system voices don't treat those marks as pause cues on their
-// own — they either glide straight through or (for open-paren) go silent for a
+// own ‚Äî they either glide straight through or (for open-paren) go silent for a
 // beat. Swapping in a comma gives the model a pause cue it already knows how to
-// render, without being as long as a full sentence break. Speech only — the
+// render, without being as long as a full sentence break. Speech only ‚Äî the
 // on-screen text is untouched.
 function insertNaturalPauses(text){
-  return text.replace(/\s*—\s*/g, ', ').replace(/\(/g, ', ');
+  return text.replace(/\s*‚Äî\s*/g, ', ').replace(/\(/g, ', ');
 }
 
 // A title like "Mr." or "Dr." keeps its period once restored from the sentence-
 // splitting stage, and a voice model has no way to tell that period apart from a
-// real sentence break — it reads the same length pause either way. Expanding to
+// real sentence break ‚Äî it reads the same length pause either way. Expanding to
 // the full spoken word removes the period entirely, so there's nothing left to
 // misread as a stop. Limited to titles with one unambiguous spoken form (skips
-// "St."/"Mt." — Saint or Street, Mount — and "vs."/"etc.", which read fine as-is).
+// "St."/"Mt." ‚Äî Saint or Street, Mount ‚Äî and "vs."/"etc.", which read fine as-is).
 const TITLE_EXPANSIONS = {
   Mr: 'Mister', Mrs: 'Missus', Dr: 'Doctor', Prof: 'Professor',
   Gen: 'General', Col: 'Colonel', Capt: 'Captain', Lt: 'Lieutenant',
@@ -1911,7 +1939,7 @@ function speechFilteredText(text){
 }
 
 // ---------------- Pronunciation dictionary ----------------
-// Lets the person fix names/words the voice mispronounces — matches the "as
+// Lets the person fix names/words the voice mispronounces ‚Äî matches the "as
 // written" text anywhere it appears and swaps in the "say instead" text, for
 // speech only. Blank "say instead" means skip that word/phrase entirely.
 function loadPronunciationRules(){
@@ -1956,7 +1984,7 @@ function renderPronunciationList(){
     const label = document.createElement('span');
     label.className = 'settings-row-label';
     label.style.fontWeight = '400';
-    label.textContent = '"' + rule.find + '" → ' + (rule.replace ? ('"' + rule.replace + '"') : 'Skip') + (rule.matchCase ? ' · match case' : '');
+    label.textContent = '"' + rule.find + '" ‚Üí ' + (rule.replace ? ('"' + rule.replace + '"') : 'Skip') + (rule.matchCase ? ' ¬∑ match case' : '');
     const delBtn = document.createElement('button');
     delBtn.className = 'modal-close';
     delBtn.setAttribute('aria-label', 'Remove rule');
@@ -1984,7 +2012,7 @@ function renderPronunciationList(){
   });
 }
 
-// Speaks a short one-off snippet through whichever voice engine is currently active —
+// Speaks a short one-off snippet through whichever voice engine is currently active ‚Äî
 // used to test a pronunciation rule without touching the book's own playback state.
 async function speakPreviewText(text, btn){
   text = (text || '').trim();
@@ -1996,7 +2024,7 @@ async function speakPreviewText(text, btn){
   if(btn){
     const original = btn.innerHTML;
     btn.disabled = true;
-    btn.innerHTML = '<span style="font-size:10px;">…</span>';
+    btn.innerHTML = '<span style="font-size:10px;">‚Ä¶</span>';
     restoreBtn = () => { btn.disabled = false; btn.innerHTML = original; };
   }
   try{
@@ -2030,7 +2058,7 @@ function playPreviewBlob(blob){
 }
 
 // A comma right before a closing quote and a speech-tag verb ("...won't," said Peter.)
-// is just grammatical glue, not a place anyone would actually pause when speaking —
+// is just grammatical glue, not a place anyone would actually pause when speaking ‚Äî
 // but TTS models read it as an ordinary comma pause. Strip it for speech only; the
 // displayed text keeps its normal, correctly-punctuated form.
 const DIALOGUE_COMMA_RE = new RegExp(',(\\s*[\'"\u2019\u201D]+)(\\s+)(?=(?:\\w+\\s+)?(?:' + DIALOGUE_TAG_VERBS + ')\\b)', 'gi');
@@ -2103,7 +2131,7 @@ function renderChapterText(){
   renderedChapterIdx = curChapter;
 }
 
-// Shows the whole chapter, scrollable, rather than just a few paragraphs — only
+// Shows the whole chapter, scrollable, rather than just a few paragraphs ‚Äî only
 // rebuilds the DOM when the chapter actually changed (cheap check), so playing
 // through a long chapter sentence-by-sentence doesn't rebuild the whole page each
 // time or fight the person's own manual scrolling.
@@ -2145,16 +2173,16 @@ function stopPlayback(){
 }
 
 function friendlyVoiceName(id){
-  // Kokoro ids look like "af_heart", "bm_george" — a=American, b=British; f=female, m=male
+  // Kokoro ids look like "af_heart", "bm_george" ‚Äî a=American, b=British; f=female, m=male
   const region = id[0] === 'a' ? 'American' : id[0] === 'b' ? 'British' : id[0].toUpperCase();
   const gender = id[1] === 'f' ? 'female' : id[1] === 'm' ? 'male' : '';
   const name = id.slice(3).replace(/^\w/, c => c.toUpperCase());
-  return `${name} — ${region} ${gender}`.trim();
+  return `${name} ‚Äî ${region} ${gender}`.trim();
 }
 
 // Fills the shared #voiceSelect with whichever engine is currently active. Kokoro's
 // list requires the model to be loaded first, so callers that need that to happen
-// (Settings opening, pressing Play) trigger it themselves — this just renders.
+// (Settings opening, pressing Play) trigger it themselves ‚Äî this just renders.
 function refreshVoiceSelect(){
   if(engine === 'piper'){
     populatePiperVoiceSelect();
@@ -2172,7 +2200,7 @@ function friendlyPiperVoiceName(id){
   return quality ? `${name} - ${quality}` : name;
 }
 
-// Known, real Piper voice IDs from the standard rhasspy/piper-voices catalog — used
+// Known, real Piper voice IDs from the standard rhasspy/piper-voices catalog ‚Äî used
 // only if the library's own voices.json manifest fetch fails (which happens if its
 // hardcoded Hugging Face path is unreachable from the browser for any reason).
 // Downloading a specific voice is a separate, more specific fetch than that manifest,
@@ -2183,7 +2211,7 @@ async function populatePiperVoiceSelect(){
   const sel = el('voiceSelect');
   sel.innerHTML = '';
   const placeholder = document.createElement('option');
-  placeholder.textContent = 'Loading voices…';
+  placeholder.textContent = 'Loading voices‚Ä¶';
   sel.appendChild(placeholder);
 
   const voices = await window.PiperEngine.listVoices();
@@ -2192,7 +2220,7 @@ async function populatePiperVoiceSelect(){
   sel.innerHTML = '';
   let ids = (voices && typeof voices === 'object') ? Object.keys(voices).filter(id => id.startsWith('en_')).sort() : [];
   if(!ids.length){
-    console.warn('Piper voices() returned nothing — falling back to a known voice list.');
+    console.warn('Piper voices() returned nothing ‚Äî falling back to a known voice list.');
     ids = FALLBACK_PIPER_VOICES;
   }
   ids.forEach(id => {
@@ -2212,7 +2240,7 @@ async function populatePiperVoiceSelect(){
 
 // Piper downloads each voice separately (unlike Kokoro's one bundle), so this
 // checks whether the specific selected voice is already cached before fetching it.
-// Piper's underlying engine isn't safe for overlapping calls — asking it to download
+// Piper's underlying engine isn't safe for overlapping calls ‚Äî asking it to download
 // a voice while also generating audio (easy to trigger now that downloads can start
 // from several places: switching engine, switching voice, opening Settings, the
 // refresh button) can leave it hung rather than erroring cleanly. Route every actual
@@ -2233,11 +2261,11 @@ async function ensurePiperVoiceReady(voiceId){
       const stored = await window.PiperEngine.storedVoices();
       if(Array.isArray(stored) && stored.includes(voiceId)) return true;
     } catch(e){ /* fall through and just try to download it */ }
-    setEngineStatus('Downloading voice…');
+    setEngineStatus('Downloading voice‚Ä¶');
     try{
       await withTimeout(window.PiperEngine.ensureVoice(voiceId, progress => {
         if(progress && progress.total){
-          setEngineStatus('Downloading voice… ' + Math.round(progress.loaded * 100 / progress.total) + '%');
+          setEngineStatus('Downloading voice‚Ä¶ ' + Math.round(progress.loaded * 100 / progress.total) + '%');
         }
       }), 60000, 'Voice download');
       setEngineStatus('');
@@ -2263,7 +2291,7 @@ function populateKokoroVoiceSelect(){
   sel.innerHTML = '';
   let list = window.KokoroEngine.listVoices();
   if(!list || !list.length){
-    console.warn('Kokoro listVoices() returned nothing — falling back to a known voice list.');
+    console.warn('Kokoro listVoices() returned nothing ‚Äî falling back to a known voice list.');
     list = FALLBACK_KOKORO_VOICES;
   }
   list.forEach(id => {
@@ -2287,11 +2315,11 @@ async function ensureKokoroReady(){
     if(!el('voiceSelect').options.length) populateKokoroVoiceSelect();
     return true;
   }
-  setEngineStatus('Downloading neural voice model…');
+  setEngineStatus('Downloading neural voice model‚Ä¶');
   try{
     await window.KokoroEngine.ensureLoaded(progress => {
       if(progress && progress.status === 'progress' && progress.progress != null){
-        setEngineStatus('Downloading model… ' + Math.round(progress.progress) + '%');
+        setEngineStatus('Downloading model‚Ä¶ ' + Math.round(progress.progress) + '%');
       }
     });
     populateKokoroVoiceSelect();
@@ -2304,12 +2332,12 @@ async function ensureKokoroReady(){
   }
 }
 
-// Safari — on both Mac and iOS, since they share the same WebKit/JavaScriptCore engine —
+// Safari ‚Äî on both Mac and iOS, since they share the same WebKit/JavaScriptCore engine ‚Äî
 // has a known bug where kokoro-js's bundled phonemizer throws
 // "TypeError: undefined is not a function" during load, unrelated to device memory.
 // (iOS Safari also separately enforces a per-tab memory ceiling that can crash the tab
-// outright before any JS error is even thrown.) Detect Safari broadly — including
-// iPadOS 13+, which reports as a Mac but exposes multi-touch — and exclude other
+// outright before any JS error is even thrown.) Detect Safari broadly ‚Äî including
+// iPadOS 13+, which reports as a Mac but exposes multi-touch ‚Äî and exclude other
 // browsers that also carry "Safari" in their user agent string (Chrome, Firefox, Edge
 // on iOS all still use WebKit under the hood there, but their own UA tokens distinguish
 // them from actual Safari).
@@ -2331,7 +2359,7 @@ function switchToPiperEngine(){
   if(engineSel) engineSel.value = 'piper';
 }
 
-// Does the same job as ensureKokoroReady(), but asks first in Safari — loading Kokoro
+// Does the same job as ensureKokoroReady(), but asks first in Safari ‚Äî loading Kokoro
 // there currently fails via a known upstream phonemizer bug (see isLikelySafari() above),
 // and on iOS specifically can also crash the tab outright with no catchable error. Every
 // caller that triggers a Kokoro load (manual or automatic) should go through this, not
@@ -2340,7 +2368,7 @@ async function ensureKokoroReadyGuarded(){
   if(window.KokoroEngine.isLoaded()) return true;
   if(isLikelySafari() && !useServer){ // the Safari bug below is specific to the in-browser WASM path
     const proceed = window.confirm(
-      "Kokoro's neural voice currently has a known bug in Safari (Mac and iPhone/iPad) — " +
+      "Kokoro's neural voice currently has a known bug in Safari (Mac and iPhone/iPad) ‚Äî " +
       "it fails to load there due to an issue in one of its bundled libraries, and on " +
       "iPhone/iPad it can also crash this tab outright from memory pressure.\n\n" +
       "Piper (the other AI voice) works reliably in Safari.\n\n" +
@@ -2351,7 +2379,7 @@ async function ensureKokoroReadyGuarded(){
       await populatePiperVoiceSelect();
       const voiceId = el('voiceSelect').value;
       if(voiceId) ensurePiperVoiceReady(voiceId);
-      setEngineStatus('Switched to Piper — Kokoro has a known Safari bug right now.');
+      setEngineStatus('Switched to Piper ‚Äî Kokoro has a known Safari bug right now.');
       return false;
     }
   }
@@ -2359,10 +2387,10 @@ async function ensureKokoroReadyGuarded(){
 }
 
 // Rejects with a clear message if the wrapped promise never settles in time,
-// instead of leaving playback stuck on "Generating…" forever.
+// instead of leaving playback stuck on "Generating‚Ä¶" forever.
 // The Settings sheet is a full-screen overlay that sits on top of the mini-player,
-// so status text written only to the player (e.g. "Downloading voice…") is invisible
-// while Settings is open — exactly when a person is likely to be watching for it.
+// so status text written only to the player (e.g. "Downloading voice‚Ä¶") is invisible
+// while Settings is open ‚Äî exactly when a person is likely to be watching for it.
 // Write it to both places so it's visible regardless of which is showing.
 function setEngineStatus(text){
   el('engineStatus').textContent = text;
@@ -2391,7 +2419,7 @@ function getKokoroAudio(chapterIdx, sentenceIdx){
     console.time('kokoro-generate:' + key);
     const promise = withTimeout(window.KokoroEngine.generateBlob(text, voice, speed), 60000, 'Voice generation')
       .finally(() => console.timeEnd('kokoro-generate:' + key));
-    promise.catch(() => { neuralAudioCache.delete(key); }); // don't cache a permanent failure — allow retry next time
+    promise.catch(() => { neuralAudioCache.delete(key); }); // don't cache a permanent failure ‚Äî allow retry next time
     neuralAudioCache.set(key, promise);
   }
   return neuralAudioCache.get(key);
@@ -2415,7 +2443,7 @@ function encodeWavFloat32(samples, sampleRate){
 }
 
 // A fresh AudioContext per sentence risks hitting Safari's concurrent-context cap
-// after enough sentences, which makes decodeAudioData start silently failing —
+// after enough sentences, which makes decodeAudioData start silently failing ‚Äî
 // reuse one context for the life of the page instead.
 let sharedAudioCtx = null;
 function getSharedAudioCtx(){
@@ -2423,21 +2451,28 @@ function getSharedAudioCtx(){
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     sharedAudioCtx = new AudioCtx();
   }
+  // Browsers auto-suspend AudioContexts that go quiet for a bit ‚Äî which can happen
+  // to this one specifically (it's only used for the brief decode step below, not
+  // continuous playback) even while the <audio> element itself is still audibly
+  // playing in the background. A suspended context makes decodeAudioData() hang
+  // rather than reject, which would silently stall the lookahead buffer. Resuming
+  // an already-running context is a harmless no-op, so it's safe to call every time.
+  if(sharedAudioCtx.state === 'suspended') sharedAudioCtx.resume();
   return sharedAudioCtx;
 }
 
-// VITS-based models like Piper bake silence into the start/end of every clip —
+// VITS-based models like Piper bake silence into the start/end of every clip ‚Äî
 // and with one clip per sentence, those stack into a long gap between sentences.
 // Some voices also render a comma as a longer internal pause than reads naturally.
 // This trims the outer edges down to a small pad, AND caps any silent run inside
 // the clip (e.g. after a comma) at a shorter max, without touching the speech.
 //
 // Detection is done on short-window RMS energy rather than raw per-sample amplitude.
-// VITS-style vocoders rarely output true digital-zero during "silence" — there's
+// VITS-style vocoders rarely output true digital-zero during "silence" ‚Äî there's
 // low-level dither/hum that flickers a handful of samples above a per-sample
 // threshold every few dozen samples. A per-sample check treats each of those flickers
 // as the end of a silent run, so a real 400ms gap gets fragmented into many tiny
-// sub-runs that each individually look "too short to cap" — and the pause survives
+// sub-runs that each individually look "too short to cap" ‚Äî and the pause survives
 // almost entirely uncompressed. Averaging energy over a short frame (15ms) smooths
 // past that noise so a genuinely quiet stretch reads as one long run, which is what
 // actually lets the cap below do its job.
@@ -2466,7 +2501,7 @@ async function compressSilence(blob, opts){
       frameRms[f] = rms;
       if(rms > peakRms) peakRms = rms;
     }
-    // A frame counts as silent based on its averaged energy, not a single sample —
+    // A frame counts as silent based on its averaged energy, not a single sample ‚Äî
     // a stray noise spike no longer splits what is really one continuous pause.
     const rmsThreshold = Math.max(peakRms * 0.04, 0.004);
     const frameSilent = f => frameRms[f] < rmsThreshold;
@@ -2474,7 +2509,7 @@ async function compressSilence(blob, opts){
     let startF = 0, endF = numFrames - 1;
     while(startF < numFrames && frameSilent(startF)) startF++;
     while(endF > startF && frameSilent(endF)) endF--;
-    if(endF <= startF) return blob; // clip looked fully silent — bail out safely, keep original
+    if(endF <= startF) return blob; // clip looked fully silent ‚Äî bail out safely, keep original
 
     const edgePadFrames = Math.max(1, Math.ceil(edgePadMs / frameMs));
     const maxInternalGapFrames = Math.max(1, Math.ceil(maxInternalGapMs / frameMs));
@@ -2482,7 +2517,7 @@ async function compressSilence(blob, opts){
     const regionEndF = Math.min(numFrames - 1, endF + edgePadFrames);
 
     // Walk the speech region frame-by-frame, keeping every non-silent frame as-is,
-    // but capping the length of any run of consecutive silent frames along the way —
+    // but capping the length of any run of consecutive silent frames along the way ‚Äî
     // this naturally covers both the outer pads (short runs, kept in full) and any
     // internal gap after a comma or title (long runs, trimmed down to the cap).
     const keptFrames = [];
@@ -2534,7 +2569,7 @@ function getPiperAudio(chapterIdx, sentenceIdx){
 function speakCurrent(){
   const ch = chapters[curChapter];
   if(!ch || curSentence >= ch.sentences.length){
-    // chapter finished — advance
+    // chapter finished ‚Äî advance
     if(curChapter < chapters.length - 1){
       curChapter++; curSentence = 0;
       renderReadingWindow();
@@ -2560,20 +2595,20 @@ async function speakCurrentKokoro(){
     const ok = await ensureKokoroReadyGuarded();
     if(myToken !== playToken) return;
     if(!ok){
-      if(engine !== 'kokoro' && isPlaying){ speakCurrent(); return; } // fell back to Piper — resume with it
+      if(engine !== 'kokoro' && isPlaying){ speakCurrent(); return; } // fell back to Piper ‚Äî resume with it
       isPlaying = false; updatePlayButton();
       return;
     }
   }
 
-  setEngineStatus('Generating…');
+  setEngineStatus('Generating‚Ä¶');
   let blob;
   try{
     blob = await getKokoroAudio(chapterIdx, sentenceIdx);
   } catch(err){
     console.error(err);
     const detail = err && err.message ? err.message : 'unknown error';
-    setEngineStatus('Voice generation failed (' + detail + ') — skipping.');
+    setEngineStatus('Voice generation failed (' + detail + ') ‚Äî skipping.');
     if(myToken !== playToken) return;
     if(isPlaying){ curSentence++; saveProgress(); speakCurrent(); }
     return;
@@ -2601,19 +2636,11 @@ async function speakCurrentKokoro(){
   };
   audioEl.play().catch(err => console.error(err));
 
-  // Prefetch a couple of sentences ahead (crossing into the next chapter if needed)
-  // so there's a buffer to absorb any slow generations, not just a single one.
-  const lookahead = [];
-  let c = chapterIdx, s = sentenceIdx;
-  for(let n = 0; n < 2; n++){
-    s++;
-    if(s >= chapters[c].sentences.length){
-      c++; s = 0;
-      if(c >= chapters.length || !chapters[c].sentences.length) break;
-    }
-    lookahead.push([c, s]);
-  }
-  lookahead.forEach(([ci, si]) => getKokoroAudio(ci, si));
+  // Prefetch several sentences ahead (crossing into the next chapter if needed) ‚Äî
+  // a buffer deep enough to survive the screen locking, not just absorb one slow
+  // generation. See the visibilitychange listener above for the bigger burst that
+  // fires right as the screen actually locks.
+  prefetchAhead(chapterIdx, sentenceIdx, NORMAL_LOOKAHEAD, getKokoroAudio);
 }
 
 async function speakCurrentPiper(){
@@ -2633,14 +2660,14 @@ async function speakCurrentPiper(){
   if(myToken !== playToken) return;
   if(!ready){ isPlaying = false; updatePlayButton(); return; }
 
-  setEngineStatus('Generating…');
+  setEngineStatus('Generating‚Ä¶');
   let blob;
   try{
     blob = await getPiperAudio(chapterIdx, sentenceIdx);
   } catch(err){
     console.error(err);
     const detail = err && err.message ? err.message : 'unknown error';
-    setEngineStatus('Voice generation failed (' + detail + ') — skipping.');
+    setEngineStatus('Voice generation failed (' + detail + ') ‚Äî skipping.');
     if(myToken !== playToken) return;
     if(isPlaying){ curSentence++; saveProgress(); speakCurrent(); }
     return;
@@ -2675,17 +2702,7 @@ async function speakCurrentPiper(){
   audioEl.onended = advanceToNext;
   audioEl.play().catch(err => console.error(err));
 
-  const lookahead = [];
-  let c = chapterIdx, s = sentenceIdx;
-  for(let n = 0; n < 2; n++){
-    s++;
-    if(s >= chapters[c].sentences.length){
-      c++; s = 0;
-      if(c >= chapters.length || !chapters[c].sentences.length) break;
-    }
-    lookahead.push([c, s]);
-  }
-  lookahead.forEach(([ci, si]) => getPiperAudio(ci, si));
+  prefetchAhead(chapterIdx, sentenceIdx, NORMAL_LOOKAHEAD, getPiperAudio);
 }
 
 const PLAY_ICON = '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><polygon points="8,5 8,19 19,12"/></svg>';
@@ -2724,7 +2741,7 @@ el('nextBtn').addEventListener('click', () => {
   if(isPlaying) speakCurrent();
 });
 el('rateSlider').addEventListener('input', () => {
-  el('rateLabel').textContent = parseFloat(el('rateSlider').value).toFixed(2) + '×';
+  el('rateLabel').textContent = parseFloat(el('rateSlider').value).toFixed(2) + '√ó';
   neuralAudioCache.clear();
 });
 el('voiceSelect').addEventListener('change', () => {
@@ -2737,7 +2754,7 @@ el('voiceSelect').addEventListener('change', () => {
       ensurePiperVoiceReady(el('voiceSelect').value); // download now, not when Play is pressed
     }
   } catch(e){ /* ignore */ }
-  // Make the switch audible right away — otherwise whatever's already playing (or
+  // Make the switch audible right away ‚Äî otherwise whatever's already playing (or
   // already generated) keeps using the old voice until the next sentence boundary,
   // which can look like the change did nothing at all.
   if(isPlaying){
@@ -2760,7 +2777,7 @@ function saveProgress(){
   if(!bookKey) return;
   try{
     localStorage.setItem(bookKey, JSON.stringify({chapter: curChapter, sentence: curSentence}));
-  }catch(e){ /* storage full or unavailable — ignore */ }
+  }catch(e){ /* storage full or unavailable ‚Äî ignore */ }
 }
 function loadProgress(){
   if(!bookKey) return null;
@@ -2778,7 +2795,7 @@ window.addEventListener('beforeunload', () => stopPlayback());
   renderLibraryList(books); // ready in case auto-open fails or the person hits Library later
   const record = books[0];
   if(!record || !record.data || !record.data.byteLength) return;
-  loadStatus.textContent = 'Reopening ' + record.name + ' …';
+  loadStatus.textContent = 'Reopening ' + record.name + ' ‚Ä¶';
   try{
     const file = new File([record.data], record.name, { type: record.type || '' });
     await handleFile(file, { isAutoOpen: true, displayName: record.displayName || null });
