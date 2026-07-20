@@ -643,8 +643,12 @@
         // share Safari's engine there) — it can crash the whole tab's rendering
         // process outright, a failure mode that happens below JavaScript and
         // can't be caught or recovered from with try/catch.
+        // q4 (rather than q8) trades a little voice fidelity for a meaningfully
+        // smaller runtime memory footprint — still not guaranteed to fit under
+        // iOS Safari's per-tab memory ceiling, but it's the cheapest lever
+        // available before giving up on Kokoro entirely on that platform.
         loadingPromise = KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", {
-          dtype: "q8",
+          dtype: "q4",
           device: "wasm",
           progress_callback: onProgress
         }).then(t => { ttsInstance = t; return t; })
@@ -706,7 +710,7 @@ let currentAudioEl = null;   // <audio> element used for kokoro playback
 const neuralAudioCache = new Map(); // "chapter-sentence" -> Promise<Blob>
 let playToken = 0;            // increments whenever playback is stopped, to cancel stale async work
 let filterEnabled = true;
-let engine = 'system'; // 'system' (device's built-in voices) or 'kokoro' (downloaded neural voice)
+let engine = 'piper'; // default for new users; 'system' and 'kokoro' remain available choices
 let systemVoices = [];
 let pronunciationRules = []; // [{find, replace, matchCase}] — applied to speech only
 let customBadWords = [];
@@ -743,7 +747,7 @@ el('settingsBtn').addEventListener('click', async () => {
     const placeholder = document.createElement('option');
     placeholder.textContent = 'Loading voices…';
     sel.appendChild(placeholder);
-    ensureKokoroReady(); // populates voiceSelect itself once the model finishes loading
+    ensureKokoroReadyGuarded(); // populates voiceSelect itself once the model finishes loading (or falls back to Piper on iOS if declined)
   } else if(!el('voiceSelect').options.length){
     // Only (re)build the list if it's empty — reopening Settings shouldn't reset
     // a voice the person already picked.
@@ -849,7 +853,7 @@ function waitForGlobal(name, timeoutMs){
 // Prep whatever downloadable engine was restored from last time, right away — so
 // by the time a book is open and Play is pressed, nothing has to download then.
 if(engine === 'kokoro'){
-  waitForGlobal('KokoroEngine').then(ke => { if(ke) ensureKokoroReady(); });
+  waitForGlobal('KokoroEngine').then(ke => { if(ke) ensureKokoroReadyGuarded(); });
 } else if(engine === 'piper'){
   waitForGlobal('PiperEngine').then(pe => {
     if(!pe) return;
@@ -893,7 +897,7 @@ el('engineSelect').addEventListener('change', async () => {
     const placeholder = document.createElement('option');
     placeholder.textContent = 'Loading voices…';
     sel.appendChild(placeholder);
-    ensureKokoroReady();
+    ensureKokoroReadyGuarded();
   } else if(engine === 'piper'){
     await populatePiperVoiceSelect();
     const voiceId = el('voiceSelect').value;
@@ -1582,7 +1586,7 @@ async function speakPreviewText(text, btn){
   }
   try{
     if(engine === 'kokoro'){
-      const ok = await ensureKokoroReady();
+      const ok = await ensureKokoroReadyGuarded();
       if(!ok) return;
       const voice = el('voiceSelect').value || 'af_heart';
       const speed = parseFloat(el('rateSlider').value);
@@ -1928,6 +1932,52 @@ async function ensureKokoroReady(){
   }
 }
 
+// iOS Safari (and any WebKit-based browser on iOS, since Apple mandates WebKit) enforces
+// a per-tab memory ceiling well below what Kokoro's model needs at runtime — hitting it
+// doesn't throw a catchable error, it just kills the tab outright. Detect iOS, including
+// iPadOS 13+, which reports as a Mac but exposes multi-touch, so callers can warn before
+// attempting a load that's likely to crash the page rather than find out the hard way.
+function isLikelyIOS(){
+  const ua = navigator.userAgent || '';
+  const iOSDevice = /iPad|iPhone|iPod/.test(ua);
+  const iPadOS13Plus = navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
+  return iOSDevice || iPadOS13Plus;
+}
+
+// Falls back to Piper (much lighter at runtime) and updates every bit of UI/storage that
+// tracks the active engine, so the fallback sticks rather than silently reverting to
+// trying Kokoro again next time the page loads.
+function switchToPiperEngine(){
+  engine = 'piper';
+  try{ localStorage.setItem('lamplight:engine', 'piper'); } catch(e){ /* ignore */ }
+  const engineSel = el('engineSelect');
+  if(engineSel) engineSel.value = 'piper';
+}
+
+// Does the same job as ensureKokoroReady(), but asks first on iOS — loading Kokoro there
+// risks crashing the tab with no catchable error (see isLikelyIOS() above). Every caller
+// that triggers a Kokoro load (manual or automatic) should go through this, not
+// ensureKokoroReady() directly, so the warning can't be bypassed by any one entry point.
+async function ensureKokoroReadyGuarded(){
+  if(window.KokoroEngine.isLoaded()) return true;
+  if(isLikelyIOS()){
+    const proceed = window.confirm(
+      "Kokoro's neural voice needs more memory than Safari allows on iPhone/iPad, and can crash this tab without warning.\n\n" +
+      "Piper (the other AI voice) is much lighter and known to work here.\n\n" +
+      "Load Kokoro anyway?"
+    );
+    if(!proceed){
+      switchToPiperEngine();
+      await populatePiperVoiceSelect();
+      const voiceId = el('voiceSelect').value;
+      if(voiceId) ensurePiperVoiceReady(voiceId);
+      setEngineStatus('Switched to Piper — Kokoro risks crashing this device.');
+      return false;
+    }
+  }
+  return ensureKokoroReady();
+}
+
 // Rejects with a clear message if the wrapped promise never settles in time,
 // instead of leaving playback stuck on "Generating…" forever.
 // The Settings sheet is a full-screen overlay that sits on top of the mini-player,
@@ -2162,9 +2212,13 @@ async function speakCurrentKokoro(){
   updateProgressBar();
 
   if(!window.KokoroEngine.isLoaded()){
-    const ok = await ensureKokoroReady();
+    const ok = await ensureKokoroReadyGuarded();
     if(myToken !== playToken) return;
-    if(!ok){ isPlaying = false; updatePlayButton(); return; }
+    if(!ok){
+      if(engine !== 'kokoro' && isPlaying){ speakCurrent(); return; } // fell back to Piper — resume with it
+      isPlaying = false; updatePlayButton();
+      return;
+    }
   }
 
   setEngineStatus('Generating…');
