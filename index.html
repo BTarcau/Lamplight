@@ -62,6 +62,10 @@
     width:8px; height:8px; border-radius:50%;
     background: var(--lamp);
     flex-shrink:0;
+    transition: background 0.2s ease;
+  }
+  header h1 .dot.online{
+    background: #2ECC40; /* bright green: audio is coming from the local server over the network */
   }
   header .tag{
     font-size: 12.5px;
@@ -523,12 +527,22 @@
       <div class="settings-row">
         <span class="settings-row-label">Voice engine</span>
         <select id="engineSelect" class="native-select">
-          <option value="system">System voice</option>
-          <option value="kokoro">Kokoro AI voice (offline)</option>
-          <option value="piper">Piper AI voice (offline)</option>
+          <option value="kokoro">Kokoro AI voice</option>
+          <option value="piper">Piper AI voice</option>
         </select>
       </div>
       <p class="footnote" id="settingsEngineStatus" style="padding:0 16px 12px; min-height:16px;"></p>
+      <div class="settings-row" id="useServerRow">
+        <span class="settings-row-label">Use local server</span>
+        <label class="ios-switch">
+          <input type="checkbox" id="useServerToggle">
+          <span class="track"></span><span class="thumb"></span>
+        </label>
+      </div>
+      <div class="settings-row settings-row-stacked hidden" id="serverUrlRow">
+        <span class="settings-row-label">Server address</span>
+        <input type="text" id="serverUrlInput" class="pron-input" style="width:100%;" placeholder="https://your-mac.your-tailnet.ts.net:8123">
+      </div>
       <div class="settings-row">
         <span class="settings-row-label">Voice</span>
         <div class="speed-control">
@@ -840,8 +854,7 @@ let currentAudioEl = null;   // <audio> element used for kokoro playback
 const neuralAudioCache = new Map(); // "chapter-sentence" -> Promise<Blob>
 let playToken = 0;            // increments whenever playback is stopped, to cancel stale async work
 let filterEnabled = true;
-let engine = 'piper'; // default for new users; 'system' and 'kokoro' remain available choices
-let systemVoices = [];
+let engine = 'piper'; // default for new users; 'kokoro' is the other available choice
 let pronunciationRules = []; // [{find, replace, matchCase}] — applied to speech only
 let customBadWords = [];
 
@@ -958,13 +971,152 @@ el('darkModeToggle').addEventListener('change', () => {
   try{ localStorage.setItem('lamplight:darkMode', darkMode ? '1' : '0'); } catch(e){ /* ignore */ }
 });
 
-// ---------------- Voice engine (system voice vs. Kokoro) ----------------
+// ---------------- Voice engine (Kokoro vs. Piper) ----------------
 try{
   const savedEngine = localStorage.getItem('lamplight:engine');
-  if(savedEngine === 'kokoro' || savedEngine === 'system' || savedEngine === 'piper') engine = savedEngine;
+  if(savedEngine === 'kokoro' || savedEngine === 'piper') engine = savedEngine;
 } catch(e){ /* ignore */ }
 el('engineSelect').value = engine;
-populateSystemVoiceSelect(); // safe default fill even if engine is 'kokoro' and not yet loaded
+
+// ---------------- Local server backend (self-hosted Kokoro/Piper over Tailscale) ----------------
+// Runs the exact same Kokoro/Piper models on the person's own Mac instead of in-browser
+// WASM, so a phone doesn't have to do the heavy lifting itself. This works by swapping
+// out which object window.KokoroEngine / window.PiperEngine point to — the server-backed
+// versions below implement the identical interface the WASM engines already expose
+// (ensureLoaded/isLoaded/listVoices/generateBlob for Kokoro; listVoices/storedVoices/
+// ensureVoice/generateBlob for Piper), so every existing call site (speakCurrentKokoro,
+// speakCurrentPiper, speakPreviewText, populate*VoiceSelect, etc.) needs no changes at all.
+let useServer = true; // default on for new users; respects an explicit prior choice either way
+try{
+  const savedUseServer = localStorage.getItem('lamplight:useServer');
+  if(savedUseServer !== null) useServer = savedUseServer === '1';
+} catch(e){ /* ignore */ }
+el('useServerToggle').checked = useServer;
+
+let serverUrl = 'https://bens-macbook-pro.tail2a16fc.ts.net:8123';
+try{
+  const savedServerUrl = localStorage.getItem('lamplight:serverUrl');
+  if(savedServerUrl) serverUrl = savedServerUrl;
+} catch(e){ /* ignore */ }
+el('serverUrlInput').value = serverUrl;
+
+function updateServerRowsVisibility(){
+  el('serverUrlRow').classList.toggle('hidden', !useServer);
+  // Header dot: bright green while audio is actually coming from the local server
+  // over the network, dark green when generation is fully on-device (toggle off).
+  document.querySelector('header h1 .dot').classList.toggle('online', useServer);
+}
+updateServerRowsVisibility();
+
+async function generateViaServer(enginePath, text, voice, speed){
+  const res = await fetch(serverUrl + '/' + enginePath + '/tts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, voice, speed })
+  });
+  if(!res.ok){
+    let detail = 'HTTP ' + res.status;
+    try{ const errBody = await res.json(); if(errBody.detail) detail = errBody.detail; } catch(e){ /* ignore */ }
+    throw new Error(detail);
+  }
+  return await res.blob();
+}
+
+let kokoroServerVoicesCache = null;
+const kokoroServerEngine = {
+  async ensureLoaded(){
+    if(kokoroServerVoicesCache) return true;
+    const res = await fetch(serverUrl + '/kokoro/voices');
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    kokoroServerVoicesCache = data.voices || [];
+    return true;
+  },
+  isLoaded(){ return !!kokoroServerVoicesCache; },
+  listVoices(){ return kokoroServerVoicesCache || []; },
+  async generateBlob(text, voice, speed){ return generateViaServer('kokoro', text, voice, speed); }
+};
+
+let piperServerVoicesCache = null;
+const piperServerEngine = {
+  async listVoices(){
+    const res = await fetch(serverUrl + '/piper/voices');
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    piperServerVoicesCache = data.voices || [];
+    return piperServerVoicesCache;
+  },
+  async storedVoices(){
+    // Nothing to download — the server already has every voice ready — so report the
+    // full catalog as "stored" and ensurePiperVoiceReady() takes its instant-return path.
+    if(piperServerVoicesCache) return piperServerVoicesCache;
+    return await piperServerEngine.listVoices();
+  },
+  async ensureVoice(){ return true; }, // unreachable in practice (storedVoices() above always short-circuits first)
+  async generateBlob(text, voiceId){ return generateViaServer('piper', text, voiceId, parseFloat(el('rateSlider').value)); }
+};
+
+let kokoroWasmEngine = null, piperWasmEngine = null;
+function applyEngineBackends(){
+  if(kokoroWasmEngine) window.KokoroEngine = useServer ? kokoroServerEngine : kokoroWasmEngine;
+  if(piperWasmEngine) window.PiperEngine = useServer ? piperServerEngine : piperWasmEngine;
+}
+// Swapping in the right backend and prepping the restored engine (so nothing has to
+// download/connect later when Play is first pressed) happen in the same callback,
+// deliberately — keeping them as one sequence avoids a race against the "which engine
+// is this book restoring?" logic below running before the server/WASM swap has happened.
+waitForGlobal('KokoroEngine').then(ke => {
+  if(!ke) return;
+  kokoroWasmEngine = ke;
+  applyEngineBackends();
+  if(engine === 'kokoro') ensureKokoroReadyGuarded();
+});
+waitForGlobal('PiperEngine').then(pe => {
+  if(!pe) return;
+  piperWasmEngine = pe;
+  applyEngineBackends();
+  if(engine === 'piper'){
+    populatePiperVoiceSelect().then(() => {
+      const voiceId = el('voiceSelect').value;
+      if(voiceId) ensurePiperVoiceReady(voiceId);
+    });
+  }
+});
+
+async function refreshVoiceListForCurrentEngine(){
+  if(engine === 'kokoro' && !window.KokoroEngine.isLoaded()){
+    const sel = el('voiceSelect');
+    sel.innerHTML = '';
+    const placeholder = document.createElement('option');
+    placeholder.textContent = 'Loading voices…';
+    sel.appendChild(placeholder);
+    ensureKokoroReadyGuarded();
+  } else if(engine === 'piper'){
+    await populatePiperVoiceSelect();
+    const voiceId = el('voiceSelect').value;
+    if(voiceId) ensurePiperVoiceReady(voiceId);
+  } else {
+    refreshVoiceSelect();
+  }
+}
+
+el('useServerToggle').addEventListener('change', async () => {
+  useServer = el('useServerToggle').checked;
+  try{ localStorage.setItem('lamplight:useServer', useServer ? '1' : '0'); } catch(e){ /* ignore */ }
+  applyEngineBackends();
+  neuralAudioCache.clear();
+  updateServerRowsVisibility();
+  await refreshVoiceListForCurrentEngine();
+});
+
+el('serverUrlInput').addEventListener('change', async () => {
+  serverUrl = el('serverUrlInput').value.trim().replace(/\/+$/, '');
+  try{ localStorage.setItem('lamplight:serverUrl', serverUrl); } catch(e){ /* ignore */ }
+  kokoroServerVoicesCache = null;
+  piperServerVoicesCache = null;
+  neuralAudioCache.clear();
+  if(useServer) await refreshVoiceListForCurrentEngine();
+});
 
 // The Kokoro/Piper engines live in <script type="module"> blocks that fetch a
 // library from a CDN — they may not be attached to window yet at this exact point
@@ -980,32 +1132,8 @@ function waitForGlobal(name, timeoutMs){
   });
 }
 
-// Prep whatever downloadable engine was restored from last time, right away — so
-// by the time a book is open and Play is pressed, nothing has to download then.
-if(engine === 'kokoro'){
-  waitForGlobal('KokoroEngine').then(ke => { if(ke) ensureKokoroReadyGuarded(); });
-} else if(engine === 'piper'){
-  waitForGlobal('PiperEngine').then(pe => {
-    if(!pe) return;
-    populatePiperVoiceSelect().then(() => {
-      const voiceId = el('voiceSelect').value;
-      if(voiceId) ensurePiperVoiceReady(voiceId);
-    });
-  });
-}
-
-// iOS Safari sometimes returns an incomplete voice list on the very first call, and
-// doesn't always fire onvoiceschanged reliably when a new voice becomes available —
-// so retry a few times shortly after load, and offer a manual refresh too.
-[300, 800, 1500, 3000].forEach(delay => {
-  setTimeout(() => {
-    if(engine === 'system' && el('voiceSelect').options.length <= 1) populateSystemVoiceSelect();
-  }, delay);
-});
 el('refreshVoicesBtn').addEventListener('click', async () => {
-  if(engine === 'system'){
-    populateSystemVoiceSelect();
-  } else if(engine === 'piper'){
+  if(engine === 'piper'){
     await populatePiperVoiceSelect();
     const voiceId = el('voiceSelect').value;
     if(voiceId) ensurePiperVoiceReady(voiceId); // confirms the shown voice is actually the one that will play
@@ -1021,20 +1149,8 @@ el('engineSelect').addEventListener('change', async () => {
   engine = el('engineSelect').value;
   try{ localStorage.setItem('lamplight:engine', engine); } catch(e){ /* ignore */ }
   neuralAudioCache.clear();
-  if(engine === 'kokoro' && !window.KokoroEngine.isLoaded()){
-    const sel = el('voiceSelect');
-    sel.innerHTML = '';
-    const placeholder = document.createElement('option');
-    placeholder.textContent = 'Loading voices…';
-    sel.appendChild(placeholder);
-    ensureKokoroReadyGuarded();
-  } else if(engine === 'piper'){
-    await populatePiperVoiceSelect();
-    const voiceId = el('voiceSelect').value;
-    if(voiceId) ensurePiperVoiceReady(voiceId); // download now, not when Play is pressed
-  } else {
-    refreshVoiceSelect();
-  }
+  updateServerRowsVisibility();
+  await refreshVoiceListForCurrentEngine();
 });
 
 // ---------------- Media Session: lock-screen controls + background playback ----------------
@@ -1333,6 +1449,77 @@ function buildChapterFromParagraphTexts(title, paraTexts){
 }
 
 // ---------------- EPUB parsing ----------------
+// Resolves a possibly-relative href against a base directory the same way a browser
+// resolves relative URLs (handling "./", "../", etc.), without ever hitting the network —
+// the "file:///" scheme just gives URL something absolute to resolve against.
+function resolveEpubPath(baseDir, href){
+  const clean = href.split('#')[0];
+  try{
+    const resolved = new URL(clean, 'file:///' + baseDir).pathname;
+    return decodeURIComponent(resolved.replace(/^\//, ''));
+  } catch(e){
+    return (baseDir + clean).replace(/\/\.\//g, '/');
+  }
+}
+
+// Real chapter titles live in the EPUB's own navigation document — nav.xhtml (EPUB3)
+// or toc.ncx (EPUB2) — not in each content file's own <title>/<h1>. (Per-file <title>
+// tags are frequently just the book's own title repeated in every single file, which
+// is why using them was producing an identical "chapter title" over and over.)
+// Returns a Map from resolved-file-path -> chapter title, keyed by the first spine
+// file that title's TOC entry points to.
+async function loadEpubTocMap(zip, opfDoc, opfDir, manifest){
+  const tocMap = new Map();
+
+  const navItem = Array.from(opfDoc.querySelectorAll('manifest > item'))
+    .find(item => (item.getAttribute('properties') || '').split(/\s+/).includes('nav'));
+  const ncxId = opfDoc.querySelector('spine')?.getAttribute('toc');
+  const ncxHref = ncxId ? manifest[ncxId] : Object.values(manifest).find(h => /\.ncx$/i.test(h));
+
+  async function readZipEntry(path){
+    const f = zip.file(path) || zip.file(decodeURIComponent(path));
+    return f ? await f.async('string') : null;
+  }
+
+  if(navItem){
+    const navHref = navItem.getAttribute('href');
+    const navDir = navHref.includes('/') ? navHref.slice(0, navHref.lastIndexOf('/')+1) : '';
+    const navFullDir = opfDir + navDir;
+    const xml = await readZipEntry(opfDir + navHref);
+    if(xml){
+      const navDoc = new DOMParser().parseFromString(xml, 'text/html'); // lenient parser handles epub:type fine
+      const tocNav = Array.from(navDoc.querySelectorAll('nav')).find(n => {
+        const t = (n.getAttribute('epub:type') || n.getAttribute('type') || '').toLowerCase();
+        return t.includes('toc');
+      }) || navDoc.querySelector('nav');
+      if(tocNav){
+        tocNav.querySelectorAll('a[href]').forEach(a => {
+          const text = a.textContent.replace(/\s+/g, ' ').trim();
+          if(!text) return;
+          const resolved = resolveEpubPath(navFullDir, a.getAttribute('href'));
+          if(!tocMap.has(resolved)) tocMap.set(resolved, text);
+        });
+      }
+    }
+  }
+  if(!tocMap.size && ncxHref){
+    const ncxDir = ncxHref.includes('/') ? ncxHref.slice(0, ncxHref.lastIndexOf('/')+1) : '';
+    const ncxFullDir = opfDir + ncxDir;
+    const xml = await readZipEntry(opfDir + ncxHref);
+    if(xml){
+      const ncxDoc = new DOMParser().parseFromString(xml, 'application/xml');
+      ncxDoc.querySelectorAll('navPoint').forEach(np => {
+        const text = (np.querySelector('navLabel > text') || {}).textContent;
+        const src = (np.querySelector('content') || {}).getAttribute?.('src');
+        if(!text || !src) return;
+        const resolved = resolveEpubPath(ncxFullDir, src);
+        if(!tocMap.has(resolved)) tocMap.set(resolved, text.replace(/\s+/g, ' ').trim());
+      });
+    }
+  }
+  return tocMap;
+}
+
 async function parseEpub(buf){
   const zip = await JSZip.loadAsync(buf);
   const containerXml = await zip.file('META-INF/container.xml').async('string');
@@ -1347,8 +1534,15 @@ async function parseEpub(buf){
     manifest[item.getAttribute('id')] = item.getAttribute('href');
   });
   const spineIds = Array.from(opfDoc.querySelectorAll('spine > itemref')).map(i => i.getAttribute('idref'));
+  const tocMap = await loadEpubTocMap(zip, opfDoc, opfDir, manifest);
 
-  const result = [];
+  // Chapters are grouped by TOC entry, not by spine file — many real EPUBs split one
+  // logical chapter across several physical files (e.g. "chNN_split_001.html",
+  // "chNN_split_002.html"), which used to each show up as their own separate,
+  // identically-titled "chapter". A spine file with no TOC entry of its own is a
+  // continuation of whichever chapter came before it.
+  const groups = [];
+
   for(const id of spineIds){
     const href = manifest[id];
     if(!href) continue;
@@ -1392,61 +1586,152 @@ async function parseEpub(buf){
     }
     if(!paraTexts.length) continue;
 
-    let title = (doc.querySelector('h1,h2,title') || {}).textContent;
-    title = (title || '').trim() || ('Chapter ' + (result.length+1));
-
-    const chapterObj = buildChapterFromParagraphTexts(title, paraTexts);
-    if(chapterObj) result.push(chapterObj);
+    const tocTitle = tocMap.get(path);
+    if(tocTitle){
+      // A real TOC entry always starts a fresh chapter, even if (rarely) its title
+      // text happens to repeat an earlier one.
+      groups.push({ title: tocTitle, paraTexts: [] });
+    } else if(!groups.length){
+      // No TOC entry has matched yet at all — front matter (cover, title page, etc.)
+      // ahead of the book's first real TOC-listed chapter. Prefer an actual heading
+      // in the body over the document's <title> (which is often just the book's own
+      // title repeated in every file, not this file's own heading).
+      const heading = (doc.body.querySelector('h1,h2,h3') || {}).textContent;
+      groups.push({ title: (heading || '').trim() || 'Front Matter', paraTexts: [] });
+    }
+    // else: continuation file of whichever TOC chapter is currently open — falls
+    // through and gets appended to it below, with no new chapter created.
+    groups[groups.length - 1].paraTexts.push(...paraTexts);
   }
+
+  const result = [];
+  groups.forEach(g => {
+    const chapterObj = buildChapterFromParagraphTexts(g.title, g.paraTexts);
+    if(chapterObj) result.push(chapterObj);
+  });
   return result;
 }
 
 // ---------------- PDF parsing ----------------
+// Groups a page's text items into lines by vertical position, then splits those
+// lines into paragraphs wherever the gap between lines is noticeably bigger than
+// the page's own typical line spacing.
+async function extractPdfPageParagraphs(page){
+  const content = await page.getTextContent();
+  const items = content.items;
+
+  const lines = [];
+  let curLine = null;
+  items.forEach(it => {
+    const y = Math.round(it.transform[5]);
+    if(curLine && Math.abs(y - curLine.y) <= 2){
+      curLine.text += it.str;
+    } else {
+      curLine = { y, text: it.str };
+      lines.push(curLine);
+    }
+  });
+
+  const gaps = [];
+  for(let k=1;k<lines.length;k++) gaps.push(Math.abs(lines[k-1].y - lines[k].y));
+  const sortedGaps = gaps.slice().sort((a,b)=>a-b);
+  const median = sortedGaps.length ? sortedGaps[Math.floor(sortedGaps.length/2)] : 14;
+
+  const paras = [];
+  let paraLines = [];
+  lines.forEach((ln, idx) => {
+    if(idx > 0){
+      const gap = Math.abs(lines[idx-1].y - ln.y);
+      if(gap > median * 1.6 && paraLines.length){
+        paras.push(paraLines.join(' '));
+        paraLines = [];
+      }
+    }
+    if(ln.text.trim()) paraLines.push(ln.text.trim());
+  });
+  if(paraLines.length) paras.push(paraLines.join(' '));
+  return paras;
+}
+
+// Resolves an outline entry's destination to a 1-indexed page number. `dest` is
+// either an explicit destination array already, or a named destination string that
+// has to be looked up first — either way it ultimately points at a page reference.
+async function resolvePdfOutlineDest(pdf, dest){
+  try{
+    let d = dest;
+    if(typeof d === 'string') d = await pdf.getDestination(d);
+    if(!d || !d[0]) return null;
+    const pageIndex = await pdf.getPageIndex(d[0]);
+    return pageIndex + 1;
+  } catch(e){ return null; }
+}
+
 async function parsePdf(buf){
   const pdf = await pdfjsLib.getDocument({data: buf}).promise;
   const result = [];
+
+  // Real chapter titles and boundaries live in the PDF's own outline/bookmarks when
+  // the publisher included one (most converted ebooks do) — far more useful than an
+  // arbitrary page count, and gives real chapter names instead of "Pages 9–16". Only
+  // top-level entries are used, not nested sub-headings, so this stays at chapter
+  // granularity rather than every subsection.
+  let plannedChapters = null;
+  try{
+    let outline = await pdf.getOutline();
+    // Some PDFs wrap their entire outline under a single root bookmark named after
+    // the book itself, with the real chapter-level entries one level down as its
+    // children — unwrap that (repeatedly, in case of more than one such wrapper)
+    // rather than treating that lone root as the only "chapter".
+    while(outline && outline.length === 1 && outline[0].items && outline[0].items.length){
+      outline = outline[0].items;
+    }
+    if(outline && outline.length){
+      const resolved = [];
+      for(const item of outline){
+        if(!item.dest) continue;
+        const page = await resolvePdfOutlineDest(pdf, item.dest);
+        const title = (item.title || '').replace(/\s+/g, ' ').trim();
+        if(page && title) resolved.push({ title, page });
+      }
+      resolved.sort((a,b) => a.page - b.page);
+      // Some PDFs point several outline entries at the exact same page (e.g. a
+      // cover/title page listed twice) — keep only the first for any given page.
+      const deduped = resolved.filter((r,i) => i === 0 || r.page !== resolved[i-1].page);
+      if(deduped.length){
+        plannedChapters = deduped.map((r,i) => ({
+          title: r.title,
+          startPage: r.page,
+          endPage: (i+1 < deduped.length) ? deduped[i+1].page - 1 : pdf.numPages,
+        }));
+        // Anything before the first bookmark (unlisted front matter) still gets read —
+        // just not silently dropped — rather than assuming it's always skippable.
+        if(plannedChapters[0].startPage > 1){
+          plannedChapters.unshift({ title: 'Front Matter', startPage: 1, endPage: plannedChapters[0].startPage - 1 });
+        }
+      }
+    }
+  } catch(e){ console.warn('PDF outline unavailable, falling back to page buckets:', e); }
+
+  if(plannedChapters){
+    for(const ch of plannedChapters){
+      const paras = [];
+      for(let i = ch.startPage; i <= ch.endPage; i++){
+        const page = await pdf.getPage(i);
+        paras.push(...(await extractPdfPageParagraphs(page)));
+      }
+      const chapterObj = buildChapterFromParagraphTexts(ch.title, paras);
+      if(chapterObj) result.push(chapterObj);
+    }
+    return result;
+  }
+
+  // Fallback for PDFs with no usable outline: bucket every few pages together.
   const PAGES_PER_CHAPTER = 8;
   let bucketParas = [];
   let bucketStart = 1;
-
   for(let i=1; i<=pdf.numPages; i++){
     const page = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    const items = content.items;
-
-    // Group text items into lines by their vertical (y) position.
-    const lines = [];
-    let curLine = null;
-    items.forEach(it => {
-      const y = Math.round(it.transform[5]);
-      if(curLine && Math.abs(y - curLine.y) <= 2){
-        curLine.text += it.str;
-      } else {
-        curLine = { y, text: it.str };
-        lines.push(curLine);
-      }
-    });
-
-    // Estimate the typical line-to-line gap, then treat a noticeably bigger
-    // gap as a paragraph break.
-    const gaps = [];
-    for(let k=1;k<lines.length;k++) gaps.push(Math.abs(lines[k-1].y - lines[k].y));
-    const sortedGaps = gaps.slice().sort((a,b)=>a-b);
-    const median = sortedGaps.length ? sortedGaps[Math.floor(sortedGaps.length/2)] : 14;
-
-    let paraLines = [];
-    lines.forEach((ln, idx) => {
-      if(idx > 0){
-        const gap = Math.abs(lines[idx-1].y - ln.y);
-        if(gap > median * 1.6 && paraLines.length){
-          bucketParas.push(paraLines.join(' '));
-          paraLines = [];
-        }
-      }
-      if(ln.text.trim()) paraLines.push(ln.text.trim());
-    });
-    if(paraLines.length) bucketParas.push(paraLines.join(' '));
-
+    bucketParas.push(...(await extractPdfPageParagraphs(page)));
     if(i % PAGES_PER_CHAPTER === 0 || i === pdf.numPages){
       const label = bucketStart === i ? ('Page ' + i) : ('Pages ' + bucketStart + '–' + i);
       const chapterObj = buildChapterFromParagraphTexts(label, bucketParas);
@@ -1729,13 +2014,6 @@ async function speakPreviewText(text, btn){
       if(!ready) return;
       const blob = await runPiperSerial(() => withTimeout(window.PiperEngine.generateBlob(text, voiceId), 60000, 'Voice generation'));
       playPreviewBlob(blob);
-    } else if(typeof speechSynthesis !== 'undefined'){
-      speechSynthesis.cancel();
-      const utter = new SpeechSynthesisUtterance(text);
-      const idx = el('voiceSelect').value;
-      if(systemVoices[idx]) utter.voice = systemVoices[idx];
-      utter.rate = parseFloat(el('rateSlider').value);
-      speechSynthesis.speak(utter);
     }
   } catch(err){
     console.error('Preview failed:', err);
@@ -1859,7 +2137,6 @@ function updateProgressBar(){
 // ---------------- Speech: shared controls ----------------
 function stopPlayback(){
   playToken++; // invalidates any in-flight kokoro generation/playback continuations
-  if(typeof speechSynthesis !== 'undefined') speechSynthesis.cancel();
   if(currentAudioEl){
     currentAudioEl.onended = null;
     currentAudioEl.pause();
@@ -1875,44 +2152,11 @@ function friendlyVoiceName(id){
   return `${name} — ${region} ${gender}`.trim();
 }
 
-// ---------------- System voice (the device's own built-in TTS) ----------------
-function populateSystemVoiceSelect(){
-  systemVoices = (typeof speechSynthesis !== 'undefined') ? speechSynthesis.getVoices() : [];
-  const sel = el('voiceSelect');
-  sel.innerHTML = '';
-  if(!systemVoices.length){
-    // Voices sometimes aren't ready yet on first load — they'll arrive via
-    // onvoiceschanged below and this gets called again.
-    const opt = document.createElement('option');
-    opt.textContent = 'Loading voices…';
-    sel.appendChild(opt);
-    return;
-  }
-  systemVoices.forEach((v, i) => {
-    const opt = document.createElement('option');
-    opt.value = String(i);
-    opt.textContent = v.name + (v.lang ? ' (' + v.lang + ')' : '');
-    sel.appendChild(opt);
-  });
-  let savedName = null;
-  try{ savedName = localStorage.getItem('lamplight:systemVoiceName'); } catch(e){ /* ignore */ }
-  let idx = savedName ? systemVoices.findIndex(v => v.name === savedName) : -1;
-  if(idx < 0){
-    idx = systemVoices.findIndex(v => v.lang && v.lang.startsWith('en') && /enhanced|premium|neural/i.test(v.name));
-  }
-  if(idx >= 0) sel.value = String(idx);
-}
-if(typeof speechSynthesis !== 'undefined'){
-  speechSynthesis.onvoiceschanged = () => { if(engine === 'system') populateSystemVoiceSelect(); };
-}
-
 // Fills the shared #voiceSelect with whichever engine is currently active. Kokoro's
 // list requires the model to be loaded first, so callers that need that to happen
 // (Settings opening, pressing Play) trigger it themselves — this just renders.
 function refreshVoiceSelect(){
-  if(engine === 'system'){
-    populateSystemVoiceSelect();
-  } else if(engine === 'piper'){
+  if(engine === 'piper'){
     populatePiperVoiceSelect();
   } else if(window.KokoroEngine.isLoaded()){
     populateKokoroVoiceSelect();
@@ -1923,11 +2167,9 @@ function refreshVoiceSelect(){
 function friendlyPiperVoiceName(id){
   // ids look like "en_US-hfc_female-medium" -> lang_region - name - quality
   const parts = id.split('-');
-  const langMap = { en_US: 'English (US)', en_GB: 'English (UK)', en_AU: 'English (AU)' };
-  const lang = langMap[parts[0]] || parts[0] || '';
   const name = (parts[1] || id).split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-  const quality = parts[2] || '';
-  return `${name} — ${lang}${quality ? ', ' + quality : ''}`.trim();
+  const quality = parts[2] ? parts[2].charAt(0).toUpperCase() + parts[2].slice(1) : '';
+  return quality ? `${name} - ${quality}` : name;
 }
 
 // Known, real Piper voice IDs from the standard rhasspy/piper-voices catalog — used
@@ -1935,7 +2177,7 @@ function friendlyPiperVoiceName(id){
 // hardcoded Hugging Face path is unreachable from the browser for any reason).
 // Downloading a specific voice is a separate, more specific fetch than that manifest,
 // so these should still work even when the manifest lookup itself doesn't.
-const FALLBACK_PIPER_VOICES = ['en_US-hfc_female-medium','en_US-hfc_male-medium','en_US-libritts_r-medium','en_US-lessac-medium','en_US-amy-medium','en_US-ryan-medium','en_GB-alan-medium','en_GB-alba-medium','en_GB-jenny_dioco-medium'];
+const FALLBACK_PIPER_VOICES = ['en_GB-alan-low','en_GB-alan-medium','en_GB-alba-medium','en_GB-aru-medium','en_GB-cori-high','en_GB-cori-medium','en_GB-jenny_dioco-medium','en_GB-northern_english_male-medium','en_GB-semaine-medium','en_GB-southern_english_female-low','en_GB-vctk-medium','en_US-amy-low','en_US-amy-medium','en_US-arctic-medium','en_US-bryce-medium','en_US-danny-low','en_US-hfc_female-medium','en_US-hfc_male-medium','en_US-joe-medium','en_US-john-medium','en_US-kathleen-low','en_US-kristin-medium','en_US-kusal-medium','en_US-l2arctic-medium','en_US-lessac-high','en_US-lessac-low','en_US-lessac-medium','en_US-libritts-high','en_US-libritts_r-medium','en_US-ljspeech-high','en_US-ljspeech-medium','en_US-mike-medium','en_US-norman-medium','en_US-reza_ibrahim-medium','en_US-ryan-high','en_US-ryan-low','en_US-ryan-medium','en_US-sam-medium'];
 
 async function populatePiperVoiceSelect(){
   const sel = el('voiceSelect');
@@ -2096,7 +2338,7 @@ function switchToPiperEngine(){
 // ensureKokoroReady() directly, so the warning can't be bypassed by any one entry point.
 async function ensureKokoroReadyGuarded(){
   if(window.KokoroEngine.isLoaded()) return true;
-  if(isLikelySafari()){
+  if(isLikelySafari() && !useServer){ // the Safari bug below is specific to the in-browser WASM path
     const proceed = window.confirm(
       "Kokoro's neural voice currently has a known bug in Safari (Mac and iPhone/iPad) — " +
       "it fails to load there due to an issue in one of its bundled libraries, and on " +
@@ -2305,42 +2547,7 @@ function speakCurrent(){
     return;
   }
   if(engine === 'kokoro') speakCurrentKokoro();
-  else if(engine === 'piper') speakCurrentPiper();
-  else speakCurrentSystem();
-}
-
-function speakCurrentSystem(){
-  const myToken = playToken;
-  const ch = chapters[curChapter];
-  const sentenceIdx = curSentence;
-  renderReadingWindow();
-  updateProgressBar();
-  if(typeof speechSynthesis === 'undefined'){
-    setEngineStatus('System voice is not available in this browser.');
-    isPlaying = false; updatePlayButton();
-    return;
-  }
-  const utter = new SpeechSynthesisUtterance(speechFilteredText(ch.sentences[sentenceIdx]) || ' ');
-  const idx = el('voiceSelect').value;
-  if(systemVoices[idx]) utter.voice = systemVoices[idx];
-  utter.rate = parseFloat(el('rateSlider').value);
-  utter.onend = () => {
-    if(myToken !== playToken || !isPlaying) return;
-    curSentence++;
-    saveProgress();
-    const extraPause = endsQuotedDialogue(ch.sentences[sentenceIdx]) ? DIALOGUE_END_PAUSE_MS : 0;
-    if(extraPause > 0){
-      setTimeout(() => { if(myToken === playToken && isPlaying) speakCurrent(); }, extraPause);
-    } else {
-      speakCurrent();
-    }
-  };
-  utter.onerror = (e) => {
-    if(myToken !== playToken) return;
-    console.error('Speech synthesis error:', e.error);
-    if(isPlaying){ curSentence++; saveProgress(); speakCurrent(); }
-  };
-  speechSynthesis.speak(utter);
+  else speakCurrentPiper();
 }
 
 async function speakCurrentKokoro(){
@@ -2528,9 +2735,6 @@ el('voiceSelect').addEventListener('change', () => {
     } else if(engine === 'piper'){
       localStorage.setItem('lamplight:piperVoice', el('voiceSelect').value);
       ensurePiperVoiceReady(el('voiceSelect').value); // download now, not when Play is pressed
-    } else {
-      const v = systemVoices[el('voiceSelect').value];
-      if(v) localStorage.setItem('lamplight:systemVoiceName', v.name);
     }
   } catch(e){ /* ignore */ }
   // Make the switch audible right away — otherwise whatever's already playing (or
