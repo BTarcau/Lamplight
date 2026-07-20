@@ -612,64 +612,168 @@
 <script type="module">
   // Kokoro TTS — 82M-parameter neural voice, runs 100% locally via WASM. Loaded lazily,
   // only when the person actually presses play (it's a real download).
-  import { KokoroTTS } from "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm";
+  //
+  // Model loading and per-sentence generation both run inside a dedicated Web Worker,
+  // not here on the main thread. WASM inference on the main thread can occupy it long
+  // enough that the browser's own hang detector kills the tab before our app-level
+  // withTimeout() ever gets a chance to run — setTimeout callbacks only fire when the
+  // event loop is free, and a busy main thread starves them just like everything else.
+  // A worker has its own thread, so the UI (and our timeout) stay responsive regardless
+  // of how long a given sentence takes to synthesize.
+  //
+  // The worker is built from a Blob URL rather than a separate file, since this whole
+  // app is one HTML file — module workers support static `import` of a full URL from
+  // inside a Blob just like a normal <script type="module"> can, so kokoro-js still
+  // loads straight from the CDN, just inside the worker's own thread instead of this one.
+  const KOKORO_WORKER_SRC = `
+    import { KokoroTTS, env } from "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm";
 
-  let ttsInstance = null;
-  let loadingPromise = null;
+    // onnxruntime-web (which kokoro-js runs on) locates its .wasm binaries relative to
+    // import.meta.url by default. That works fine for a normal <script type="module">
+    // loaded from a real CDN path, but this worker is built from a Blob URL — inside it,
+    // import.meta.url IS the blob: URL, which has no sibling files to resolve a .wasm
+    // path against. Left on auto-detect, the load can hang indefinitely waiting on a
+    // fetch to a URL that can never resolve, with no error ever thrown to catch. Pointing
+    // wasmPaths at kokoro-js's actual onnxruntime-web dependency version on jsdelivr
+    // sidesteps the guesswork entirely. kokoro-js only re-exports a partial 'env' (just
+    // cacheDir/wasmPaths, forwarded to transformers.js's underlying onnx backend config)
+    // — that's all we need here.
+    env.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0-dev.20250409-89f8206ba4/dist/";
 
-  function encodeWav(samples, sampleRate){
-    const buffer = new ArrayBuffer(44 + samples.length * 2);
-    const view = new DataView(buffer);
-    const writeStr = (offset, str) => { for(let i=0;i<str.length;i++) view.setUint8(offset+i, str.charCodeAt(i)); };
-    writeStr(0,'RIFF'); view.setUint32(4, 36 + samples.length*2, true); writeStr(8,'WAVE');
-    writeStr(12,'fmt '); view.setUint32(16,16,true); view.setUint16(20,1,true); view.setUint16(22,1,true);
-    view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate*2, true);
-    view.setUint16(32,2,true); view.setUint16(34,16,true);
-    writeStr(36,'data'); view.setUint32(40, samples.length*2, true);
-    let offset = 44;
-    for(let i=0;i<samples.length;i++, offset+=2){
-      const s = Math.max(-1, Math.min(1, samples[i]));
-      view.setInt16(offset, s < 0 ? s*0x8000 : s*0x7FFF, true);
+    let ttsInstance = null;
+    let loadingPromise = null;
+
+    function encodeWav(samples, sampleRate){
+      const buffer = new ArrayBuffer(44 + samples.length * 2);
+      const view = new DataView(buffer);
+      const writeStr = (offset, str) => { for(let i=0;i<str.length;i++) view.setUint8(offset+i, str.charCodeAt(i)); };
+      writeStr(0,'RIFF'); view.setUint32(4, 36 + samples.length*2, true); writeStr(8,'WAVE');
+      writeStr(12,'fmt '); view.setUint32(16,16,true); view.setUint16(20,1,true); view.setUint16(22,1,true);
+      view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate*2, true);
+      view.setUint16(32,2,true); view.setUint16(34,16,true);
+      writeStr(36,'data'); view.setUint32(40, samples.length*2, true);
+      let offset = 44;
+      for(let i=0;i<samples.length;i++, offset+=2){
+        const s = Math.max(-1, Math.min(1, samples[i]));
+        view.setInt16(offset, s < 0 ? s*0x8000 : s*0x7FFF, true);
+      }
+      return new Blob([buffer], {type:'audio/wav'});
     }
-    return new Blob([buffer], {type:'audio/wav'});
+
+    self.onmessage = async (event) => {
+      const msg = event.data;
+      try{
+        if(msg.type === 'load'){
+          if(ttsInstance){ self.postMessage({ type: 'load:done' }); return; }
+          if(!loadingPromise){
+            // Stick to q8, not q4: q4 uses 4-bit block quantization (the MatMulNBits
+            // ONNX op), which onnxruntime-web's WASM execution provider doesn't
+            // reliably support — it can fail the model load entirely, on any
+            // platform, not just memory-constrained ones. q8 is the safe floor here.
+            loadingPromise = KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", {
+              dtype: "q8",
+              device: "wasm",
+              progress_callback: (progress) => {
+                if(progress && progress.status === 'progress' && progress.progress != null){
+                  self.postMessage({ type: 'load:progress', progress: progress.progress });
+                }
+              }
+            }).then(t => { ttsInstance = t; return t; })
+              .catch(err => { loadingPromise = null; throw err; });
+          }
+          await loadingPromise;
+          let voices = [];
+          try{
+            const v = ttsInstance.list_voices ? ttsInstance.list_voices() : Object.keys(ttsInstance.voices || {});
+            voices = Array.isArray(v) ? v : Object.keys(v || {});
+          } catch(e){ voices = []; }
+          self.postMessage({ type: 'load:done', voices });
+        } else if(msg.type === 'generate'){
+          const audio = await ttsInstance.generate(msg.text, { voice: msg.voice, speed: msg.speed });
+          let blob;
+          if(typeof audio.toBlob === 'function'){
+            blob = await audio.toBlob();
+          } else {
+            const samples = audio.audio || audio.data;
+            const rate = audio.sampling_rate || audio.sample_rate || 24000;
+            blob = encodeWav(samples, rate);
+          }
+          self.postMessage({ type: 'generate:result', id: msg.id, blob });
+        }
+      } catch(err){
+        const detail = (err && err.message) ? err.message : String(err);
+        self.postMessage({ type: (msg.type === 'generate' ? 'generate:error' : 'load:error'), id: msg.id, message: detail });
+      }
+    };
+  `;
+
+  let kokoroWorker = null;
+  let kokoroLoaded = false;
+  let kokoroVoicesCache = [];
+  let kokoroLoadPromise = null;
+  let kokoroReqId = 0;
+  const kokoroPendingGenerate = new Map(); // id -> {resolve, reject}
+
+  function getKokoroWorker(){
+    if(!kokoroWorker){
+      const blob = new Blob([KOKORO_WORKER_SRC], { type: 'application/javascript' });
+      const url = URL.createObjectURL(blob);
+      kokoroWorker = new Worker(url, { type: 'module' });
+      kokoroWorker.onmessage = (event) => {
+        const msg = event.data;
+        if(msg.type === 'generate:result'){
+          const pending = kokoroPendingGenerate.get(msg.id);
+          if(pending){ kokoroPendingGenerate.delete(msg.id); pending.resolve(msg.blob); }
+        } else if(msg.type === 'generate:error'){
+          const pending = kokoroPendingGenerate.get(msg.id);
+          if(pending){ kokoroPendingGenerate.delete(msg.id); pending.reject(new Error(msg.message)); }
+        }
+        // 'load:progress', 'load:done', 'load:error' are handled by the one-off
+        // listener that ensureLoaded() attaches per call, not here.
+      };
+      kokoroWorker.onerror = (event) => {
+        console.error('Kokoro worker error:', event.message || event);
+      };
+    }
+    return kokoroWorker;
   }
 
   window.KokoroEngine = {
     async ensureLoaded(onProgress){
-      if(ttsInstance) return ttsInstance;
-      if(!loadingPromise){
-        // WASM-only, deliberately. WebGPU is still immature for heavy compute
-        // workloads in WebKit (Safari, and every browser on iOS since they all
-        // share Safari's engine there) — it can crash the whole tab's rendering
-        // process outright, a failure mode that happens below JavaScript and
-        // can't be caught or recovered from with try/catch.
-        // q4 (rather than q8) trades a little voice fidelity for a meaningfully
-        // smaller runtime memory footprint — still not guaranteed to fit under
-        // iOS Safari's per-tab memory ceiling, but it's the cheapest lever
-        // available before giving up on Kokoro entirely on that platform.
-        loadingPromise = KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", {
-          dtype: "q4",
-          device: "wasm",
-          progress_callback: onProgress
-        }).then(t => { ttsInstance = t; return t; })
-          .catch(err => { loadingPromise = null; throw err; });
+      if(kokoroLoaded) return true;
+      if(!kokoroLoadPromise){
+        const worker = getKokoroWorker();
+        kokoroLoadPromise = new Promise((resolve, reject) => {
+          const onMessage = (event) => {
+            const msg = event.data;
+            if(msg.type === 'load:progress'){
+              if(onProgress) onProgress({ status: 'progress', progress: msg.progress });
+            } else if(msg.type === 'load:done'){
+              kokoroLoaded = true;
+              kokoroVoicesCache = msg.voices || [];
+              worker.removeEventListener('message', onMessage);
+              resolve(true);
+            } else if(msg.type === 'load:error'){
+              kokoroLoadPromise = null;
+              worker.removeEventListener('message', onMessage);
+              reject(new Error(msg.message));
+            }
+          };
+          worker.addEventListener('message', onMessage);
+          worker.postMessage({ type: 'load' });
+        });
       }
-      return loadingPromise;
+      return kokoroLoadPromise;
     },
-    isLoaded(){ return !!ttsInstance; },
-    listVoices(){
-      if(!ttsInstance) return [];
-      try{
-        const v = ttsInstance.list_voices ? ttsInstance.list_voices() : Object.keys(ttsInstance.voices || {});
-        return Array.isArray(v) ? v : Object.keys(v || {});
-      } catch(e){ return []; }
-    },
-    async generateBlob(text, voice, speed){
-      const audio = await ttsInstance.generate(text, { voice, speed });
-      if(typeof audio.toBlob === 'function') return audio.toBlob();
-      const samples = audio.audio || audio.data;
-      const rate = audio.sampling_rate || audio.sample_rate || 24000;
-      return encodeWav(samples, rate);
+    isLoaded(){ return kokoroLoaded; },
+    listVoices(){ return kokoroVoicesCache; },
+    generateBlob(text, voice, speed){
+      const worker = getKokoroWorker();
+      const id = ++kokoroReqId;
+      return new Promise((resolve, reject) => {
+        kokoroPendingGenerate.set(id, { resolve, reject });
+        worker.postMessage({ type: 'generate', id, text, voice, speed });
+      });
     }
   };
 </script>
@@ -1932,16 +2036,21 @@ async function ensureKokoroReady(){
   }
 }
 
-// iOS Safari (and any WebKit-based browser on iOS, since Apple mandates WebKit) enforces
-// a per-tab memory ceiling well below what Kokoro's model needs at runtime — hitting it
-// doesn't throw a catchable error, it just kills the tab outright. Detect iOS, including
-// iPadOS 13+, which reports as a Mac but exposes multi-touch, so callers can warn before
-// attempting a load that's likely to crash the page rather than find out the hard way.
-function isLikelyIOS(){
+// Safari — on both Mac and iOS, since they share the same WebKit/JavaScriptCore engine —
+// has a known bug where kokoro-js's bundled phonemizer throws
+// "TypeError: undefined is not a function" during load, unrelated to device memory.
+// (iOS Safari also separately enforces a per-tab memory ceiling that can crash the tab
+// outright before any JS error is even thrown.) Detect Safari broadly — including
+// iPadOS 13+, which reports as a Mac but exposes multi-touch — and exclude other
+// browsers that also carry "Safari" in their user agent string (Chrome, Firefox, Edge
+// on iOS all still use WebKit under the hood there, but their own UA tokens distinguish
+// them from actual Safari).
+function isLikelySafari(){
   const ua = navigator.userAgent || '';
-  const iOSDevice = /iPad|iPhone|iPod/.test(ua);
   const iPadOS13Plus = navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
-  return iOSDevice || iPadOS13Plus;
+  const isIOSDevice = /iPad|iPhone|iPod/.test(ua) || iPadOS13Plus;
+  const isActualSafari = /^((?!chrome|crios|fxios|edgios|android).)*safari/i.test(ua);
+  return isIOSDevice || isActualSafari;
 }
 
 // Falls back to Piper (much lighter at runtime) and updates every bit of UI/storage that
@@ -1954,24 +2063,27 @@ function switchToPiperEngine(){
   if(engineSel) engineSel.value = 'piper';
 }
 
-// Does the same job as ensureKokoroReady(), but asks first on iOS — loading Kokoro there
-// risks crashing the tab with no catchable error (see isLikelyIOS() above). Every caller
-// that triggers a Kokoro load (manual or automatic) should go through this, not
+// Does the same job as ensureKokoroReady(), but asks first in Safari — loading Kokoro
+// there currently fails via a known upstream phonemizer bug (see isLikelySafari() above),
+// and on iOS specifically can also crash the tab outright with no catchable error. Every
+// caller that triggers a Kokoro load (manual or automatic) should go through this, not
 // ensureKokoroReady() directly, so the warning can't be bypassed by any one entry point.
 async function ensureKokoroReadyGuarded(){
   if(window.KokoroEngine.isLoaded()) return true;
-  if(isLikelyIOS()){
+  if(isLikelySafari()){
     const proceed = window.confirm(
-      "Kokoro's neural voice needs more memory than Safari allows on iPhone/iPad, and can crash this tab without warning.\n\n" +
-      "Piper (the other AI voice) is much lighter and known to work here.\n\n" +
-      "Load Kokoro anyway?"
+      "Kokoro's neural voice currently has a known bug in Safari (Mac and iPhone/iPad) — " +
+      "it fails to load there due to an issue in one of its bundled libraries, and on " +
+      "iPhone/iPad it can also crash this tab outright from memory pressure.\n\n" +
+      "Piper (the other AI voice) works reliably in Safari.\n\n" +
+      "Try loading Kokoro anyway?"
     );
     if(!proceed){
       switchToPiperEngine();
       await populatePiperVoiceSelect();
       const voiceId = el('voiceSelect').value;
       if(voiceId) ensurePiperVoiceReady(voiceId);
-      setEngineStatus('Switched to Piper — Kokoro risks crashing this device.');
+      setEngineStatus('Switched to Piper — Kokoro has a known Safari bug right now.');
       return false;
     }
   }
