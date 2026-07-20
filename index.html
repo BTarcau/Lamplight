@@ -681,6 +681,18 @@
             // the MatMulNBits op that onnxruntime-web's WASM backend doesn't reliably
             // support — it can fail the model load entirely, not just run slower.
             const useWebGPU = !!(self.navigator && self.navigator.gpu);
+            console.log('[kokoro-worker] navigator.gpu present:', useWebGPU, '-> device:', useWebGPU ? 'webgpu' : 'wasm', 'dtype:', useWebGPU ? 'fp32' : 'q8');
+            if(useWebGPU){
+              // Diagnostic only — separate from whatever adapter transformers.js requests
+              // internally for the actual model; requesting one here doesn't consume or
+              // lock anything, it's just a probe so we can see in the console whether the
+              // browser handed back a real GPU adapter or a software/CPU-emulated one
+              // (which would be slower than plain WASM, not faster).
+              self.navigator.gpu.requestAdapter().then(adapter => {
+                if(!adapter){ console.log('[kokoro-worker] requestAdapter() returned null — no WebGPU adapter available'); return; }
+                console.log('[kokoro-worker] WebGPU adapter info:', adapter.info || '(no .info available)', 'isFallbackAdapter:', adapter.isFallbackAdapter);
+              }).catch(err => console.log('[kokoro-worker] requestAdapter() probe failed:', err));
+            }
             loadingPromise = KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", {
               dtype: useWebGPU ? "fp32" : "q8",
               device: useWebGPU ? "webgpu" : "wasm",
@@ -700,7 +712,10 @@
           } catch(e){ voices = []; }
           self.postMessage({ type: 'load:done', voices });
         } else if(msg.type === 'generate'){
+          const label = '[kokoro-worker] generate #' + msg.id + ' (' + msg.text.length + ' chars, voice=' + msg.voice + ')';
+          console.time(label);
           const audio = await ttsInstance.generate(msg.text, { voice: msg.voice, speed: msg.speed });
+          console.timeEnd(label);
           let blob;
           if(typeof audio.toBlob === 'function'){
             blob = await audio.toBlob();
