@@ -1013,6 +1013,13 @@ el('serverUrlInput').value = serverUrl;
 // sentence boundaries stop reading as sentence boundaries at all; above ~150ms
 // they start standing out against that baseline. Applies to both engines — Kokoro's
 // raw clips actually carry even more lead/trail silence than Piper's.
+//
+// This one slider controls the gap wherever two sentences end up, not just one
+// case: when they're batched into the same clip (Piper's paragraphs), it's the cap
+// on the internal gap between them; when they're separate clips (Kokoro is always
+// per-sentence), the actual pause a listener hears is the *sum* of clip A's trailing
+// edge trim and clip B's leading edge trim — so edgePadMs is derived as half this
+// value at each call site, making both cases converge on roughly the same target gap.
 let maxInternalGapMs = 80;
 try{
   const savedGap = localStorage.getItem('lamplight:maxInternalGapMs');
@@ -2455,7 +2462,7 @@ function getKokoroAudio(chapterIdx, sentenceIdx){
     // boundary. Same fix as Piper: run it through compressSilence.
     const promise = withTimeout(window.KokoroEngine.generateBlob(text, voice, speed), 60000, 'Voice generation')
       .finally(() => console.timeEnd('kokoro-generate:' + key))
-      .then(blob => compressSilence(blob, { maxInternalGapMs }));
+      .then(blob => compressSilence(blob, { maxInternalGapMs, edgePadMs: Math.round(maxInternalGapMs / 2) }));
     promise.catch(() => { neuralAudioCache.delete(key); }); // don't cache a permanent failure — allow retry next time
     neuralAudioCache.set(key, promise);
   }
@@ -2596,7 +2603,7 @@ function getPiperAudio(chapterIdx, sentenceIdx){
     const promise = runPiperSerial(() =>
       withTimeout(window.PiperEngine.generateBlob(text, voiceId), 60000, 'Voice generation')
     ).finally(() => console.timeEnd('piper-generate:' + key))
-     .then(blob => compressSilence(blob, { maxInternalGapMs })); // strip lead/tail silence, cap any internal gap (e.g. after a comma)
+     .then(blob => compressSilence(blob, { maxInternalGapMs, edgePadMs: Math.round(maxInternalGapMs / 2) })); // strip lead/tail silence, cap any internal gap (e.g. after a comma)
     promise.catch(() => { neuralAudioCache.delete(key); });
     neuralAudioCache.set(key, promise);
   }
@@ -2623,7 +2630,7 @@ function getPiperParagraphAudio(chapterIdx, paragraphIdx){
     const promise = runPiperSerial(() =>
       withTimeout(window.PiperEngine.generateBlob(text, voiceId), 90000, 'Voice generation')
     ).finally(() => console.timeEnd('piper-para-generate:' + key))
-     .then(blob => compressSilence(blob, { maxInternalGapMs }));
+     .then(blob => compressSilence(blob, { maxInternalGapMs, edgePadMs: Math.round(maxInternalGapMs / 2) }));
     promise.catch(() => { neuralAudioCache.delete(key); });
     neuralAudioCache.set(key, promise);
   }
