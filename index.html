@@ -559,7 +559,7 @@
           <span class="rate-label" id="rateLabel">1.0×</span>
         </div>
       </div>
-      <div class="settings-row hidden" id="pauseTightnessRow">
+      <div class="settings-row" id="pauseTightnessRow">
         <span class="settings-row-label">Sentence pause</span>
         <div class="speed-control">
           <input type="range" id="pauseTightnessSlider" min="50" max="200" step="10" value="80">
@@ -1008,10 +1008,11 @@ try{
 el('serverUrlInput').value = serverUrl;
 
 // How long a silent gap between sentences (or after a comma) is allowed to stay,
-// after Piper's own natural pauses get measured and capped — see compressSilence().
-// Below the natural word-to-word micro-pause floor (~45-75ms) sentence boundaries
-// stop reading as sentence boundaries at all; above ~150ms they start standing out
-// against that baseline. Piper-only: Kokoro doesn't go through compressSilence.
+// after each engine's own baked-in pauses get measured and capped — see
+// compressSilence(). Below the natural word-to-word micro-pause floor (~45-75ms)
+// sentence boundaries stop reading as sentence boundaries at all; above ~150ms
+// they start standing out against that baseline. Applies to both engines — Kokoro's
+// raw clips actually carry even more lead/trail silence than Piper's.
 let maxInternalGapMs = 80;
 try{
   const savedGap = localStorage.getItem('lamplight:maxInternalGapMs');
@@ -1028,7 +1029,6 @@ el('pauseTightnessSlider').addEventListener('input', () => {
 
 function updateServerRowsVisibility(){
   el('serverUrlRow').classList.toggle('hidden', !useServer);
-  el('pauseTightnessRow').classList.toggle('hidden', engine !== 'piper');
   // Header dot: bright green while audio is actually coming from the local server
   // over the network, dark green when generation is fully on-device (toggle off).
   document.querySelector('header h1 .dot').classList.toggle('online', useServer);
@@ -2449,8 +2449,13 @@ function getKokoroAudio(chapterIdx, sentenceIdx){
     const speed = parseFloat(el('rateSlider').value);
     const text = speechFilteredText(ch.sentences[sentenceIdx]) || ' ';
     console.time('kokoro-generate:' + key);
+    // Kokoro clips carry even more baked-in lead/trail silence than Piper's (measured
+    // ~330ms lead + 400-500ms trail per clip) — with sentence-by-sentence playback
+    // and no trimming, that's up to ~800ms of dead air at every single sentence
+    // boundary. Same fix as Piper: run it through compressSilence.
     const promise = withTimeout(window.KokoroEngine.generateBlob(text, voice, speed), 60000, 'Voice generation')
-      .finally(() => console.timeEnd('kokoro-generate:' + key));
+      .finally(() => console.timeEnd('kokoro-generate:' + key))
+      .then(blob => compressSilence(blob, { maxInternalGapMs }));
     promise.catch(() => { neuralAudioCache.delete(key); }); // don't cache a permanent failure — allow retry next time
     neuralAudioCache.set(key, promise);
   }
