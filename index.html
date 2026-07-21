@@ -562,7 +562,7 @@
       <div class="settings-row" id="pauseTightnessRow">
         <span class="settings-row-label">Sentence pause</span>
         <div class="speed-control">
-          <input type="range" id="pauseTightnessSlider" min="50" max="200" step="10" value="80">
+          <input type="range" id="pauseTightnessSlider" min="50" max="500" step="10" value="80">
           <span class="rate-label" id="pauseTightnessLabel">80ms</span>
         </div>
       </div>
@@ -1010,9 +1010,11 @@ el('serverUrlInput').value = serverUrl;
 // How long a silent gap between sentences (or after a comma) is allowed to stay,
 // after each engine's own baked-in pauses get measured and capped — see
 // compressSilence(). Below the natural word-to-word micro-pause floor (~45-75ms)
-// sentence boundaries stop reading as sentence boundaries at all; above ~150ms
-// they start standing out against that baseline. Applies to both engines — Kokoro's
-// raw clips actually carry even more lead/trail silence than Piper's.
+// sentence boundaries stop reading as sentence boundaries at all; the slider's max
+// (500ms) is set well past a natural sentence break so the high end of the range
+// actually sounds different, not just technically different, from the low end.
+// Applies to both engines — Kokoro's raw clips actually carry even more lead/trail
+// silence than Piper's.
 //
 // This one slider controls the gap wherever two sentences end up, not just one
 // case: when they're batched into the same clip (Piper's paragraphs), it's the cap
@@ -2505,6 +2507,22 @@ function getSharedAudioCtx(){
   return sharedAudioCtx;
 }
 
+// Safari has a long-standing WebKit bug where firing multiple decodeAudioData() calls
+// on the same AudioContext concurrently can resolve a promise with a DIFFERENT call's
+// audio than the one it was asked to decode — the request doesn't error, it just comes
+// back holding someone else's clip. prefetchAhead() deliberately kicks off several
+// sentences' worth of generation (and therefore several compressSilence calls) at once,
+// so without this queue those decodes race on sharedAudioCtx and a sentence can end up
+// playing another sentence's audio. Routing every decode through one serial queue (same
+// pattern as runPiperSerial above) means only one is ever in flight, which is cheap —
+// each decode is a few ms — and eliminates the race entirely.
+let decodeQueue = Promise.resolve();
+function runDecodeSerial(fn){
+  const result = decodeQueue.then(fn, fn);
+  decodeQueue = result.then(() => {}, () => {});
+  return result;
+}
+
 // VITS-based models like Piper bake silence into the start/end of every clip —
 // and with one clip per sentence, those stack into a long gap between sentences.
 // Some voices also render a comma as a longer internal pause than reads naturally.
@@ -2527,8 +2545,7 @@ async function compressSilence(blob, opts){
   const frameMs = 15;
   try{
     const arrayBuffer = await blob.arrayBuffer();
-    const ctx = getSharedAudioCtx();
-    const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+    const audioBuffer = await runDecodeSerial(() => getSharedAudioCtx().decodeAudioData(arrayBuffer));
     const sampleRate = audioBuffer.sampleRate;
     const data = audioBuffer.getChannelData(0);
 
