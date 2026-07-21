@@ -559,6 +559,13 @@
           <span class="rate-label" id="rateLabel">1.0×</span>
         </div>
       </div>
+      <div class="settings-row hidden" id="pauseTightnessRow">
+        <span class="settings-row-label">Sentence pause</span>
+        <div class="speed-control">
+          <input type="range" id="pauseTightnessSlider" min="50" max="200" step="10" value="80">
+          <span class="rate-label" id="pauseTightnessLabel">80ms</span>
+        </div>
+      </div>
     </div>
 
     <div class="settings-group">
@@ -1000,8 +1007,28 @@ try{
 } catch(e){ /* ignore */ }
 el('serverUrlInput').value = serverUrl;
 
+// How long a silent gap between sentences (or after a comma) is allowed to stay,
+// after Piper's own natural pauses get measured and capped — see compressSilence().
+// Below the natural word-to-word micro-pause floor (~45-75ms) sentence boundaries
+// stop reading as sentence boundaries at all; above ~150ms they start standing out
+// against that baseline. Piper-only: Kokoro doesn't go through compressSilence.
+let maxInternalGapMs = 80;
+try{
+  const savedGap = localStorage.getItem('lamplight:maxInternalGapMs');
+  if(savedGap) maxInternalGapMs = parseInt(savedGap, 10) || 80;
+} catch(e){ /* ignore */ }
+el('pauseTightnessSlider').value = maxInternalGapMs;
+el('pauseTightnessLabel').textContent = maxInternalGapMs + 'ms';
+el('pauseTightnessSlider').addEventListener('input', () => {
+  maxInternalGapMs = parseInt(el('pauseTightnessSlider').value, 10);
+  el('pauseTightnessLabel').textContent = maxInternalGapMs + 'ms';
+  try{ localStorage.setItem('lamplight:maxInternalGapMs', maxInternalGapMs); } catch(e){ /* ignore */ }
+  neuralAudioCache.clear(); // already-generated clips baked in the old cap
+});
+
 function updateServerRowsVisibility(){
   el('serverUrlRow').classList.toggle('hidden', !useServer);
+  el('pauseTightnessRow').classList.toggle('hidden', engine !== 'piper');
   // Header dot: bright green while audio is actually coming from the local server
   // over the network, dark green when generation is fully on-device (toggle off).
   document.querySelector('header h1 .dot').classList.toggle('online', useServer);
@@ -2564,7 +2591,7 @@ function getPiperAudio(chapterIdx, sentenceIdx){
     const promise = runPiperSerial(() =>
       withTimeout(window.PiperEngine.generateBlob(text, voiceId), 60000, 'Voice generation')
     ).finally(() => console.timeEnd('piper-generate:' + key))
-     .then(blob => compressSilence(blob)); // strip lead/tail silence, cap any internal gap (e.g. after a comma)
+     .then(blob => compressSilence(blob, { maxInternalGapMs })); // strip lead/tail silence, cap any internal gap (e.g. after a comma)
     promise.catch(() => { neuralAudioCache.delete(key); });
     neuralAudioCache.set(key, promise);
   }
@@ -2591,7 +2618,7 @@ function getPiperParagraphAudio(chapterIdx, paragraphIdx){
     const promise = runPiperSerial(() =>
       withTimeout(window.PiperEngine.generateBlob(text, voiceId), 90000, 'Voice generation')
     ).finally(() => console.timeEnd('piper-para-generate:' + key))
-     .then(blob => compressSilence(blob));
+     .then(blob => compressSilence(blob, { maxInternalGapMs }));
     promise.catch(() => { neuralAudioCache.delete(key); });
     neuralAudioCache.set(key, promise);
   }
