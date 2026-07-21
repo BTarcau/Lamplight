@@ -1198,8 +1198,13 @@ function prefetchAhead(chapterIdx, sentenceIdx, count, getAudioFn){
 
 document.addEventListener('visibilitychange', () => {
   if(!document.hidden || !isPlaying || !chapters.length) return;
-  const getAudioFn = engine === 'kokoro' ? getKokoroAudio : getPiperAudio;
-  prefetchAhead(curChapter, curSentence, BACKGROUND_BURST_LOOKAHEAD, getAudioFn);
+  if(engine === 'piper' && useServer){
+    const ch = chapters[curChapter];
+    prefetchParagraphsAhead(curChapter, ch.sentenceParagraph[curSentence], BACKGROUND_BURST_PARAGRAPH_LOOKAHEAD);
+  } else {
+    const getAudioFn = engine === 'kokoro' ? getKokoroAudio : getPiperAudio;
+    prefetchAhead(curChapter, curSentence, BACKGROUND_BURST_LOOKAHEAD, getAudioFn);
+  }
 });
 
 // ---------------- File handling ----------------
@@ -2566,6 +2571,33 @@ function getPiperAudio(chapterIdx, sentenceIdx){
   return neuralAudioCache.get(key);
 }
 
+// Whole-paragraph generation for server-backed Piper only. Tested against the local
+// server up to 3200+ characters with no truncation or quality loss (unlike Kokoro,
+// which hits a hard ~500-character wall and silently drops anything past it) — one
+// clip per paragraph instead of one per sentence removes almost all of the artificial
+// gaps between sentences, at the cost of only being able to highlight/resume at
+// paragraph granularity rather than the exact sentence within it.
+function getPiperParagraphAudio(chapterIdx, paragraphIdx){
+  const key = 'para-' + chapterIdx + '-' + paragraphIdx;
+  if(!neuralAudioCache.has(key)){
+    const ch = chapters[chapterIdx];
+    const para = ch && ch.paragraphs[paragraphIdx];
+    if(!para) return null;
+    const voiceId = el('voiceSelect').value;
+    if(!voiceId) return null;
+    const text = para.sentenceIndices.map(si => speechFilteredText(ch.sentences[si])).filter(Boolean).join(' ') || ' ';
+    console.log('[piper] generating paragraph', key, 'with voice:', voiceId);
+    console.time('piper-para-generate:' + key);
+    const promise = runPiperSerial(() =>
+      withTimeout(window.PiperEngine.generateBlob(text, voiceId), 90000, 'Voice generation')
+    ).finally(() => console.timeEnd('piper-para-generate:' + key))
+     .then(blob => compressSilence(blob));
+    promise.catch(() => { neuralAudioCache.delete(key); });
+    neuralAudioCache.set(key, promise);
+  }
+  return neuralAudioCache.get(key);
+}
+
 function speakCurrent(){
   const ch = chapters[curChapter];
   if(!ch || curSentence >= ch.sentences.length){
@@ -2643,9 +2675,50 @@ async function speakCurrentKokoro(){
   prefetchAhead(chapterIdx, sentenceIdx, NORMAL_LOOKAHEAD, getKokoroAudio);
 }
 
+// First sentence index of whichever paragraph comes after the one containing
+// sentenceIdx — across chapter boundaries too. Returns null at the end of the book.
+function nextParagraphStart(chapterIdx, sentenceIdx){
+  const ch = chapters[chapterIdx];
+  const paragraphIdx = ch.sentenceParagraph[sentenceIdx];
+  let c = chapterIdx, p = paragraphIdx + 1;
+  while(c < chapters.length){
+    if(chapters[c].paragraphs[p]) return { chapterIdx: c, sentenceIdx: chapters[c].paragraphs[p].sentenceIndices[0] };
+    c++; p = 0;
+  }
+  return null;
+}
+
+const NORMAL_PARAGRAPH_LOOKAHEAD = 2;
+const BACKGROUND_BURST_PARAGRAPH_LOOKAHEAD = 8;
+
+function prefetchParagraphsAhead(chapterIdx, paragraphIdx, count){
+  let c = chapterIdx, p = paragraphIdx;
+  for(let n = 0; n < count; n++){
+    p++;
+    if(!chapters[c] || p >= chapters[c].paragraphs.length){
+      c++; p = 0;
+      if(c >= chapters.length || !chapters[c].paragraphs.length) break;
+    }
+    getPiperParagraphAudio(c, p);
+  }
+}
+
 async function speakCurrentPiper(){
   const myToken = playToken;
-  const chapterIdx = curChapter, sentenceIdx = curSentence;
+  // Server-backed Piper batches a whole paragraph into one clip (tested reliable well
+  // past paragraph length); the in-browser WASM path stays per-sentence since it
+  // wasn't part of what was actually tested against here.
+  const batching = useServer;
+  const chapterIdx = curChapter;
+  let ch = chapters[chapterIdx];
+  let paragraphIdx = batching ? ch.sentenceParagraph[curSentence] : null;
+  if(batching){
+    // Snap to the paragraph's first sentence — batched audio can only start there,
+    // so the highlight should always match what's actually about to play, even if
+    // curSentence pointed mid-paragraph (e.g. from clicking a sentence, or resuming).
+    curSentence = ch.paragraphs[paragraphIdx].sentenceIndices[0];
+  }
+  const sentenceIdx = curSentence;
   renderReadingWindow();
   updateProgressBar();
 
@@ -2663,13 +2736,20 @@ async function speakCurrentPiper(){
   setEngineStatus('Generating…');
   let blob;
   try{
-    blob = await getPiperAudio(chapterIdx, sentenceIdx);
+    blob = batching ? await getPiperParagraphAudio(chapterIdx, paragraphIdx) : await getPiperAudio(chapterIdx, sentenceIdx);
   } catch(err){
     console.error(err);
     const detail = err && err.message ? err.message : 'unknown error';
     setEngineStatus('Voice generation failed (' + detail + ') — skipping.');
     if(myToken !== playToken) return;
-    if(isPlaying){ curSentence++; saveProgress(); speakCurrent(); }
+    if(isPlaying){
+      // On failure, skip the whole paragraph when batching (not +1) — retrying the
+      // same paragraph text would just fail the same way again.
+      const next = batching ? nextParagraphStart(chapterIdx, sentenceIdx) : null;
+      if(batching && next){ curChapter = next.chapterIdx; curSentence = next.sentenceIdx; }
+      else curSentence++;
+      saveProgress(); speakCurrent();
+    }
     return;
   }
   if(myToken !== playToken || !blob) return;
@@ -2682,15 +2762,23 @@ async function speakCurrentPiper(){
   audioEl.src = url;
   audioEl.dataset.blobUrl = url;
 
-  // getPiperAudio() already trims the baked-in lead/tail silence off every clip
-  // (see trimTrailingSilence), so playback can just run to its natural end.
+  // getPiperAudio()/getPiperParagraphAudio() already trim the baked-in lead/tail
+  // silence off every clip (see compressSilence), so playback can just run to its
+  // natural end.
+  const lastSentenceIdx = batching ? ch.paragraphs[paragraphIdx].sentenceIndices.slice(-1)[0] : sentenceIdx;
   let advanced = false;
-  const finishedTextPiper = chapters[chapterIdx].sentences[sentenceIdx];
+  const finishedTextPiper = ch.sentences[lastSentenceIdx];
   const advanceToNext = () => {
     if(advanced) return;
     advanced = true;
     if(myToken !== playToken || !isPlaying) return;
-    curSentence++;
+    if(batching){
+      const next = nextParagraphStart(chapterIdx, sentenceIdx);
+      if(next){ curChapter = next.chapterIdx; curSentence = next.sentenceIdx; }
+      else { curSentence = lastSentenceIdx + 1; } // past the end — speakCurrent() below handles finishing the book
+    } else {
+      curSentence++;
+    }
     saveProgress();
     const extraPause = endsQuotedDialogue(finishedTextPiper) ? DIALOGUE_END_PAUSE_MS : 0;
     if(extraPause > 0){
@@ -2702,7 +2790,11 @@ async function speakCurrentPiper(){
   audioEl.onended = advanceToNext;
   audioEl.play().catch(err => console.error(err));
 
-  prefetchAhead(chapterIdx, sentenceIdx, NORMAL_LOOKAHEAD, getPiperAudio);
+  if(batching){
+    prefetchParagraphsAhead(chapterIdx, paragraphIdx, NORMAL_PARAGRAPH_LOOKAHEAD);
+  } else {
+    prefetchAhead(chapterIdx, sentenceIdx, NORMAL_LOOKAHEAD, getPiperAudio);
+  }
 }
 
 const PLAY_ICON = '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><polygon points="8,5 8,19 19,12"/></svg>';
@@ -2729,14 +2821,27 @@ el('playBtn').addEventListener('click', () => {
 
 el('prevBtn').addEventListener('click', () => {
   stopPlayback();
-  if(curSentence > 0) curSentence--;
+  const ch = chapters[curChapter];
+  if(engine === 'piper' && useServer && ch){
+    // Jump a full paragraph back, not one sentence — matches the granularity
+    // batched Piper playback actually starts clips at.
+    const paragraphIdx = ch.sentenceParagraph[curSentence];
+    curSentence = paragraphIdx > 0 ? ch.paragraphs[paragraphIdx - 1].sentenceIndices[0] : 0;
+  } else if(curSentence > 0){
+    curSentence--;
+  }
   renderReadingWindow(); updateProgressBar(); saveProgress();
   if(isPlaying) speakCurrent();
 });
 el('nextBtn').addEventListener('click', () => {
   stopPlayback();
-  curSentence++;
-  if(curSentence >= chapters[curChapter].sentences.length) curSentence = chapters[curChapter].sentences.length - 1;
+  if(engine === 'piper' && useServer && chapters[curChapter]){
+    const next = nextParagraphStart(curChapter, curSentence);
+    if(next){ curChapter = next.chapterIdx; curSentence = next.sentenceIdx; }
+  } else {
+    curSentence++;
+    if(curSentence >= chapters[curChapter].sentences.length) curSentence = chapters[curChapter].sentences.length - 1;
+  }
   renderReadingWindow(); updateProgressBar(); saveProgress();
   if(isPlaying) speakCurrent();
 });
