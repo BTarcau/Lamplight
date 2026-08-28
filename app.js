@@ -1,5 +1,20 @@
 pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
+// ---------------- No pinch / double-tap zoom ----------------
+// touch-action + the viewport meta tag aren't reliably enough on their own on iOS —
+// Safari's native two-finger pinch gesture and double-tap-to-zoom fire independently
+// of those. gesturestart/gesturechange are the WebKit-specific events behind pinch;
+// canceling them (and debouncing fast-repeat touchend, which is what a double-tap
+// looks like) blocks zoom without touching normal single-finger scrolling.
+document.addEventListener('gesturestart', (e) => e.preventDefault());
+document.addEventListener('gesturechange', (e) => e.preventDefault());
+let lastTouchEndAt = 0;
+document.addEventListener('touchend', (e) => {
+  const now = Date.now();
+  if(now - lastTouchEndAt <= 300) e.preventDefault();
+  lastTouchEndAt = now;
+}, { passive: false });
+
 // ---------------- State ----------------
 let chapters = [];     // [{title, sentences: [string,...]}]
 let curChapter = 0;

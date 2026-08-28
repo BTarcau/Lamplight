@@ -18,9 +18,16 @@
     --sys-font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', Roboto, sans-serif;
   }
   *{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html,body{ height:100%; touch-action: pan-x pan-y; }
+  /* html/body never scroll or bounce themselves — only .sidebar and main do (both
+     already overflow-y:auto below). Without this, iOS's native rubber-band overscroll
+     drags the whole page (including the sticky header/player) up or down, exposing
+     blank space past its edges. */
+  html,body{ height:100%; overflow:hidden; overscroll-behavior:none; touch-action: pan-x pan-y; }
   body{
     margin:0;
+    position:fixed;
+    inset:0;
+    width:100%;
     background: var(--paper);
     color: var(--ink);
     font-family: var(--sys-font);
